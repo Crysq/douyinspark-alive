@@ -77,10 +77,13 @@ services:
       REDIS_ADDR: redis:6379
       JWT_SECRET: ${JWT_SECRET:-please-change-this-secret-in-production}
       ALLOW_ORIGIN: ${ALLOW_ORIGIN:-*}
+      # 可信代理网段：cloudflared 落在 127.0.0.1，Docker 网关在桥接网段
+      TRUSTED_PROXIES: ${TRUSTED_PROXIES:-}
       SIGN_SERVICE_URL: http://sign:9100
       TICK_SECONDS: "20"
     ports:
-      - "${APP_PORT:-8790}:8787"
+      # 只绑本机回环：公网走 Cloudflare 隧道，内网走 Tailscale，不暴露到局域网
+      - "127.0.0.1:${APP_PORT:-8790}:8787"
 
 volumes:
   mysql-data:

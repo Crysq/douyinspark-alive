@@ -28,7 +28,7 @@ func New(h *handler.Handler, cfg *config.Config, rdb *cache.Cache) *gin.Engine {
 	} else {
 		_ = r.SetTrustedProxies(cfg.TrustedProxies)
 	}
-	r.Use(gin.Recovery(), middleware.CORS(cfg.AllowOrigin), middleware.AccessLog())
+	r.Use(gin.Recovery(), middleware.RealIP(cfg), middleware.CORS(cfg.AllowOrigin), middleware.AccessLog())
 
 	r.GET("/health", h.Health)
 

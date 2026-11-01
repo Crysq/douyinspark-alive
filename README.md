@@ -8,6 +8,15 @@
 
 </div>
 
+## 🌐 线上地址
+
+| 入口 | 地址 |
+| --- | --- |
+| 内网（Tailscale） | https://mac.tail17f525.ts.net:9443 |
+| 公网（Cloudflare） | https://spark.lkke.me · https://douyinspark.lkke.me |
+
+部署细节见 [docs/DEPLOY.md](docs/DEPLOY.md)（OrbStack + Tailscale Serve + Cloudflare Tunnel + launchd）。
+
 ---
 
 ## 📸 界面预览
