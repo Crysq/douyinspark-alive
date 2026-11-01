@@ -240,47 +240,272 @@ app.post('/fetch', handle(async (req) => {
 }))
 app.post('/account/profile', handle(async (req) => accountProfile(idOf(req))))
 
-// 抓发送协议：拦截并 abort 发送请求，只记录 URL/body，不会真的发出消息
+// 直接探测 imapi（Node 侧带 Cookie，不受 CORS 限制）
+app.post('/imapi-probe', handle(async (req) => {
+  const id = idOf(req)
+  const session = await ensureSession(id)
+  const client = await session.page.createCDPSession()
+  let cookieHeader = ''
+  try {
+    const { cookies } = await client.send('Network.getAllCookies')
+    cookieHeader = cookies
+      .filter((c) => /douyin\.com$/.test(c.domain) || c.domain.endsWith('.douyin.com'))
+      .map((c) => `${c.name}=${c.value}`)
+      .join('; ')
+  } finally {
+    await client.detach().catch(() => {})
+  }
+  const path = req.body?.path || '/v1/message/send'
+  const headers = {
+    'content-type': req.body?.contentType || 'application/x-protobuf',
+    cookie: cookieHeader,
+    'user-agent': req.body?.ua || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36',
+    ...(req.body?.headers || {}),
+  }
+  const payload = req.body?.bodyB64 ? Buffer.from(req.body.bodyB64, 'base64') : (req.body?.body || '')
+  const res = await fetch('https://imapi.douyin.com' + path, { method: req.body?.method || 'POST', headers, body: payload })
+  const text = await res.text()
+  return { status: res.status, ct: res.headers.get('content-type') || '', body: text.slice(0, 400) }
+}))
+
+// 安全抓包：劫持 fetch / WebSocket.send，只记录不发送
+app.post('/capture-send-safe', handle(async (req) => {
+  const id = idOf(req)
+  const session = await ensureSession(id)
+  const page = await session.browser.newPage()
+  await page.evaluateOnNewDocument(() => {
+    window.__sent = []
+    const origFetch = window.fetch
+    window.fetch = function (input, init) {
+      const url = typeof input === 'string' ? input : (input && input.url) || ''
+      if (url.includes('imapi.douyin.com') && init && String(init.method || '').toUpperCase() === 'POST' && /send|create/i.test(url)) {
+        try {
+          const raw = init.body
+          let b64 = ''
+          if (raw instanceof Uint8Array) b64 = btoa(String.fromCharCode.apply(null, raw))
+          else if (raw instanceof ArrayBuffer) b64 = btoa(String.fromCharCode.apply(null, new Uint8Array(raw)))
+          else if (typeof raw === 'string') b64 = btoa(unescape(encodeURIComponent(raw)))
+          window.__sent.push({ kind: 'fetch', url, ct: (init.headers && (init.headers['content-type'] || init.headers['Content-Type'])) || '', bodyB64: b64.slice(0, 6000) })
+        } catch (e) { }
+        return Promise.reject(new Error('blocked by probe'))
+      }
+      return origFetch.apply(this, arguments)
+    }
+    const origSend = WebSocket.prototype.send
+    WebSocket.prototype.send = function (data) {
+      try { window.__sent.push({ kind: 'ws', url: this.url, data: typeof data === 'string' ? data.slice(0, 2000) : '[binary]' }) } catch (e) { }
+    }
+  })
+  let typed = false
+  let buttons = []
+  try {
+    const target = req.body?.secUid ? `https://www.douyin.com/chat/${req.body.secUid}` : 'https://www.douyin.com/chat'
+    await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 45000 })
+    await sleep(8000)
+    const pos = await page.evaluate(() => {
+      const el = document.querySelector('[data-e2e="conversation-item"]')
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+    })
+    if (pos) { await page.mouse.click(pos.x, pos.y); await sleep(4000) }
+    const inputPos = await page.evaluate(() => {
+      const el = document.querySelector('div[contenteditable="true"], textarea')
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+    })
+    if (inputPos) {
+      await page.mouse.click(inputPos.x, inputPos.y)
+      await page.keyboard.type(req.body?.text || 'ping', { delay: 60 })
+      typed = true
+      await sleep(600)
+    }
+    buttons = await page.evaluate(() => [...document.querySelectorAll('button, [role="button"]')]
+      .map((el) => ({ text: (el.textContent || '').trim().slice(0, 8), cls: String(el.className || '').slice(0, 40) }))
+      .filter((b) => /发送|send/i.test(b.text + b.cls)).slice(0, 5))
+    const sendPos = await page.evaluate(() => {
+      const el = [...document.querySelectorAll('button, [role="button"]')]
+        .find((e) => /发送/.test((e.textContent || '').trim()) || /send/i.test(String(e.className || '')))
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+    })
+    if (sendPos) { await page.mouse.click(sendPos.x, sendPos.y); await sleep(3500) }
+    const captured = await page.evaluate(() => window.__sent || [])
+    return { typed, hasSendButton: Boolean(sendPos), buttons, sent: captured.slice(0, 6) }
+  } finally {
+    await page.close().catch(() => {})
+  }
+}))
+
+// 直接探测 imapi（Node 侧带 Cookie，不受 CORS 限制）
+app.post('/imapi-probe', handle(async (req) => {
+  const id = idOf(req)
+  const session = await ensureSession(id)
+  const client = await session.page.createCDPSession()
+  let cookieHeader = ''
+  try {
+    const { cookies } = await client.send('Network.getAllCookies')
+    cookieHeader = cookies
+      .filter((c) => /douyin\.com$/.test(c.domain) || c.domain.endsWith('.douyin.com'))
+      .map((c) => `${c.name}=${c.value}`)
+      .join('; ')
+  } finally {
+    await client.detach().catch(() => {})
+  }
+  const path = req.body?.path || '/v1/message/send'
+  const headers = {
+    'content-type': req.body?.contentType || 'application/x-protobuf',
+    cookie: cookieHeader,
+    'user-agent': req.body?.ua || 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36',
+    ...(req.body?.headers || {}),
+  }
+  const payload = req.body?.bodyB64 ? Buffer.from(req.body.bodyB64, 'base64') : (req.body?.body || '')
+  const res = await fetch('https://imapi.douyin.com' + path, { method: req.body?.method || 'POST', headers, body: payload })
+  const text = await res.text()
+  return { status: res.status, ct: res.headers.get('content-type') || '', body: text.slice(0, 400) }
+}))
+
+// 安全抓包：劫持 fetch / WebSocket.send，只记录不发送
+app.post('/capture-send-safe', handle(async (req) => {
+  const id = idOf(req)
+  const session = await ensureSession(id)
+  const page = await session.browser.newPage()
+  await page.evaluateOnNewDocument(() => {
+    window.__sent = []
+    const origFetch = window.fetch
+    window.fetch = function (input, init) {
+      const url = typeof input === 'string' ? input : (input && input.url) || ''
+      if (/imapi|send|message/i.test(url)) {
+        try { window.__sent.push({ kind: 'fetch', url, method: (init && init.method) || 'GET', body: init && init.body ? String(init.body).slice(0, 3000) : '', ct: (init && init.headers && (init.headers['content-type'] || init.headers['Content-Type'])) || '' }) } catch (e) { }
+        return Promise.reject(new Error('blocked by probe'))
+      }
+      return origFetch.apply(this, arguments)
+    }
+    const origSend = WebSocket.prototype.send
+    WebSocket.prototype.send = function (data) {
+      try {
+        window.__sent.push({ kind: 'ws', url: this.url, data: typeof data === 'string' ? data.slice(0, 3000) : '[binary ' + (data && data.byteLength ? data.byteLength : '?') + ' bytes]' })
+      } catch (e) { }
+      return undefined // 丢弃，不真正发送
+    }
+  })
+  let typed = false
+  try {
+    await page.goto('https://www.douyin.com/chat', { waitUntil: 'domcontentloaded', timeout: 45000 })
+    await sleep(8000)
+    const box = await page.evaluate(() => {
+      const el = document.querySelector('[data-e2e="conversation-item"]')
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+    })
+    if (box) await page.mouse.click(box.x, box.y)
+    await sleep(4000)
+    typed = await page.evaluate((text) => {
+      const input = document.querySelector('div[contenteditable="true"], textarea')
+      if (!input) return false
+      input.focus()
+      if (input.tagName === 'TEXTAREA') {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+        setter.call(input, text)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      } else {
+        input.textContent = text
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }))
+      }
+      return true
+    }, req.body?.text || 'ping')
+    await sleep(800)
+    const buttons = await page.evaluate(() => [...document.querySelectorAll('button, [role="button"], [data-e2e]')]
+      .map((el) => ({ text: (el.textContent || '').trim().slice(0, 10), e2e: el.getAttribute('data-e2e') || '', cls: String(el.className || '').slice(0, 40) }))
+      .filter((b) => /发送|send/i.test(b.text + b.e2e + b.cls))
+      .slice(0, 6))
+    let clicked = false
+    if (buttons.length) {
+      const hit = await page.evaluate(() => {
+        const el = [...document.querySelectorAll('button, [role="button"], [data-e2e]')]
+          .find((e) => /发送/.test((e.textContent || '').trim()) || /send/i.test(e.getAttribute('data-e2e') || ''))
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+      })
+      if (hit) { await page.mouse.click(hit.x, hit.y); clicked = true }
+    }
+    if (!clicked) await page.keyboard.press('Enter').catch(() => {})
+    await sleep(4000)
+    const state = await page.evaluate(() => {
+      const input = document.querySelector('div[contenteditable="true"], textarea')
+      return { text: input ? (input.textContent || input.value || '').slice(0, 50) : '', captured: window.__sent || [] }
+    })
+    return { typed, clicked, buttons, inputText: state.text, sent: state.captured.slice(0, 10) }
+  } finally {
+    await page.close().catch(() => {})
+  }
+}))
+
+// 抓发送协议：只截获 imapi 的 send 请求并 abort，不实际发出消息
 app.post('/capture-send', handle(async (req) => {
   const id = idOf(req)
   const session = await ensureSession(id)
   const page = await session.browser.newPage()
-  const http = []
-  const ws = []
+  const seen = []
+  const sends = []
   await page.setRequestInterception(true)
   page.on('request', (r) => {
     const u = r.url()
-    const post = r.postData() || ''
-    if (r.method() === 'POST' && /douyin\.com/.test(u) && (/send/i.test(u) || post.includes(req.body?.text || 'ping'))) {
-      http.push({ url: u.slice(0, 400), ct: r.headers()['content-type'] || '', post: post.slice(0, 600) })
-      r.abort()
-      return
+    if (!u.includes('imapi.douyin.com')) { r.continue(); return }
+    const isSend = /send/i.test(u)
+    const rec = {
+      url: u.slice(0, 300), method: r.method(), isSend,
+      headers: Object.fromEntries(Object.entries(r.headers()).filter(([k]) => /content-type|session|app|priority|user-agent|x-|cookie/i.test(k))),
+      bodyB64: r.postData() ? Buffer.from(r.postData(), 'binary').toString('base64').slice(0, 4000) : '',
     }
+    if (isSend) { sends.push(rec); r.abort(); return }
+    if (seen.length < 12) seen.push(rec)
     r.continue()
   })
-  page.on('websocket', (socket) => {
-    socket.on('framesent', (frame) => {
-      const payload = typeof frame.payload === 'string' ? frame.payload : ''
-      if (payload && payload.length < 4000 && /send|msg|message/i.test(payload)) ws.push(payload.slice(0, 600))
-    })
-  })
+  let typed = false
   try {
-    await page.goto('https://www.douyin.com/chat', { waitUntil: 'domcontentloaded', timeout: 45000 })
-    await sleep(6000)
-    const item = await page.$('[data-e2e="conversation-item"]')
-    if (item) { await item.click().catch(() => {}) }
-    await sleep(3000)
-    const input = await page.$('[contenteditable="true"], textarea, [data-e2e="chat-input"]')
-    if (input) {
-      await input.click().catch(() => {})
-      await page.keyboard.type(req.body?.text || 'ping', { delay: 30 })
-      await page.keyboard.press('Enter')
+    const target = req.body?.secUid ? `https://www.douyin.com/chat/${req.body.secUid}` : 'https://www.douyin.com/chat'
+    await page.goto(target, { waitUntil: 'domcontentloaded', timeout: 45000 })
+    await sleep(7000)
+    if (!req.body?.secUid) {
+      const item = await page.$('[data-e2e="conversation-item"]')
+      if (item) await item.click().catch(() => {})
+      await sleep(3500)
     }
-    await sleep(5000)
+    var inputsDump = await page.evaluate(() => {
+      const sel = 'textarea, [contenteditable], [role="textbox"], [data-e2e*="input"]'
+      return [...document.querySelectorAll(sel)].slice(0, 20).map((el) => ({
+        tag: el.tagName, ce: el.getAttribute('contenteditable'), e2e: el.getAttribute('data-e2e'),
+        cls: String(el.className || '').slice(0, 60), vis: el.getBoundingClientRect().width > 0,
+      }))
+    })
+    typed = await page.evaluate((text) => {
+      const input = document.querySelector('div[contenteditable="true"], textarea, [data-e2e="chat-input"]')
+      if (!input) return false
+      input.focus()
+      if (input.tagName === 'TEXTAREA') {
+        const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+        setter.call(input, text)
+        input.dispatchEvent(new Event('input', { bubbles: true }))
+      } else {
+        input.textContent = text
+        input.dispatchEvent(new InputEvent('input', { bubbles: true, data: text }))
+      }
+      return true
+    }, req.body?.text || 'ping')
+    await sleep(600)
+    if (typed) {
+      await page.keyboard.press('Enter').catch(() => {})
+      await sleep(4000)
+    }
   } finally {
     await page.close().catch(() => {})
   }
-  return { http: http.slice(0, 10), ws: ws.slice(0, 10) }
+  return { typed, inputs: inputsDump, sends: sends.slice(0, 3), others: seen.slice(0, 8) }
 }))
 
 // 好友（会话）列表：聊天页的会话数据走 WebSocket，
@@ -333,6 +558,55 @@ app.post('/probe', handle(async (req) => {
   try {
     await page.goto('https://www.douyin.com/chat', { waitUntil: 'domcontentloaded', timeout: 45000 })
     await sleep(Number(req.body?.waitMs || 9000))
+    var bundleInfo
+    if (req.body?.bundles) {
+      bundleInfo = await page.evaluate(async () => {
+        const urls = [...new Set(performance.getEntriesByType('resource').map((e) => e.name))]
+          .filter((u) => /\.(js|mjs)(\?|$)/.test(u))
+        const paths = new Set()
+        const ctx = []
+        for (const u of urls.slice(0, 40)) {
+          try {
+            const txt = await (await fetch(u)).text()
+            const hit = txt.match(/\/v1\/[a-z0-9_\-]+\/[a-z0-9_\-]+/gi) || []
+            hit.forEach((x) => paths.add(x))
+            const idx = txt.search(/send_message|sendMessage|\/message\/send/i)
+            if (idx > 0) ctx.push(txt.slice(Math.max(0, idx - 120), idx + 200))
+          } catch { /* ignore */ }
+        }
+        return { count: urls.length, paths: [...paths].slice(0, 60), ctx: ctx.slice(0, 4) }
+      })
+    }
+    var snapInfo
+    if (req.body?.snap) {
+      snapInfo = await page.evaluate(() => ({ url: location.href, title: document.title, text: (document.body.innerText || '').slice(0, 700) }))
+      snapInfo.image = (await page.screenshot({ type: 'jpeg', quality: 45, encoding: 'base64' })).slice(0, 200000)
+    }
+    var inputDump, imapiPaths
+    if (req.body?.inputs) {
+      const item = await page.$('[data-e2e="conversation-item"]')
+      if (item) await item.click().catch(() => {})
+      await sleep(3000)
+      inputDump = await page.evaluate(() => {
+        const sel = 'textarea, [contenteditable], input, [role="textbox"], [data-e2e*="input"], [class*="input"]'
+        return [...document.querySelectorAll(sel)].slice(0, 40).map((el) => ({
+          tag: el.tagName,
+          ce: el.getAttribute('contenteditable'),
+          role: el.getAttribute('role'),
+          e2e: el.getAttribute('data-e2e'),
+          cls: String(el.className || '').slice(0, 80),
+          ph: el.getAttribute('placeholder') || '',
+          visible: el.getBoundingClientRect().width > 0,
+        }))
+      })
+      imapiPaths = await page.evaluate(() => {
+        const set = new Set()
+        for (const e of performance.getEntriesByType('resource')) {
+          if (e.name.includes('imapi.douyin.com')) set.add(new URL(e.name).pathname)
+        }
+        return [...set]
+      })
+    }
     var jsPaths
     if (req.body?.js) {
       jsPaths = await page.evaluate(async () => {
@@ -382,7 +656,7 @@ app.post('/probe', handle(async (req) => {
   } finally {
     await page.close().catch(() => {})
   }
-  return { captured: captured.slice(0, 40), calls: calls.slice(0, 60), dom: req.body?.dom ? domItems : undefined, attrs: attrsDump, js: jsPaths }
+  return { captured: captured.slice(0, 40), calls: calls.slice(0, 60), dom: req.body?.dom ? domItems : undefined, attrs: attrsDump, js: jsPaths, inputs: inputDump, imapi: imapiPaths, snap: snapInfo, bundles: bundleInfo }
 }))
 app.post('/cookie/import', handle(async (req) => {
   if (!req.body?.cookie) throw new Error('cookie 必填')

@@ -49,6 +49,9 @@ func (c *Client) SendIM(accountID uint, cookie, toUserID, text string) error {
 	if err != nil {
 		return err
 	}
+	if res.Status == 404 {
+		return fmt.Errorf("抖音已把私信迁到 imapi.douyin.com 的 protobuf 协议，旧表单接口已下线（HTTP 404）")
+	}
 	if res.Status != 200 {
 		return fmt.Errorf("私信接口返回 %d: %s", res.Status, truncate(res.Body, 160))
 	}
