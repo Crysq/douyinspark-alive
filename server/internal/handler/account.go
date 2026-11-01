@@ -1,12 +1,14 @@
 package handler
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
 	"doyinspark/internal/model"
 	"doyinspark/internal/service"
+	"doyinspark/internal/signer"
 	"doyinspark/internal/util"
 )
 
@@ -191,7 +193,7 @@ func (h *Handler) SyncAccount(c *gin.Context) {
 	util.OKMsg(c, "资料已同步", account)
 }
 
-// SyncFriends 从私信会话同步好友。
+// SyncFriends 同步会话好友：聊天页拿到 sec_uid，再批量换取 uid / 昵称 / 头像。
 func (h *Handler) SyncFriends(c *gin.Context) {
 	account, ok := h.accountOf(c)
 	if !ok {
@@ -205,32 +207,79 @@ func (h *Handler) SyncFriends(c *gin.Context) {
 		util.Fail(c, 409, "账号「"+account.Nickname+"」还未登录，请先扫码登录后再同步会话")
 		return
 	}
-	conversations, err := h.Sign.FetchConversations(account.ID, account.Cookie)
+
+	secUIDs, err := h.Sign.FetchFriendSecUIDs(account.ID)
 	if err != nil {
 		util.Fail(c, 502, "同步失败："+err.Error())
 		return
 	}
+	profiles, err := h.Sign.FetchFriendProfiles(account.ID, account.Cookie, secUIDs)
+	if err != nil && len(profiles) == 0 {
+		util.Fail(c, 502, "同步失败："+err.Error())
+		return
+	}
+
 	created, updated := 0, 0
-	for _, conv := range conversations {
+	for _, profile := range profiles {
+		if profile.Nickname == "" {
+			continue
+		}
+		key := profile.UID
+		if key == "" {
+			key = profile.SecUID
+		}
 		var friend model.Friend
-		err := h.DB.Where("account_id = ? AND friend_user_id = ?", account.ID, conv.UserID).First(&friend).Error
+		err := h.DB.Where("account_id = ? AND (friend_user_id = ? OR sec_uid = ?)", account.ID, key, profile.SecUID).First(&friend).Error
 		if err != nil {
 			h.DB.Create(&model.Friend{
-				UserID: uid(c), AccountID: account.ID, Name: conv.Nickname, DouyinUserID: conv.UserID,
-				SecUID: conv.SecUID, UniqueID: conv.UniqueID, AvatarURL: conv.AvatarURL, AutoKeep: true,
+				UserID: uid(c), AccountID: account.ID, Name: profile.Nickname,
+				DouyinUserID: profile.UID, SecUID: profile.SecUID,
+				UniqueID: profile.UniqueID, AvatarURL: profile.AvatarURL, AutoKeep: true,
 			})
 			created++
 			continue
 		}
 		h.DB.Model(&friend).Updates(map[string]any{
-			"name": conv.Nickname, "avatar_url": conv.AvatarURL, "sec_uid": conv.SecUID, "unique_id": conv.UniqueID,
+			"name": profile.Nickname, "avatar_url": profile.AvatarURL,
+			"unique_id": profile.UniqueID, "sec_uid": profile.SecUID,
+			"friend_user_id": profile.UID,
 		})
 		updated++
 	}
+
 	now := time.Now()
 	h.DB.Model(account).Update("last_sync_at", now)
-	h.audit(c, "account.sync", account.Nickname, "同步好友")
-	util.OKMsg(c, "同步完成", gin.H{"created": created, "updated": updated, "total": len(conversations)})
+	h.audit(c, "account.sync", account.Nickname, "同步会话好友")
+	util.OKMsg(c, "同步完成", gin.H{"created": created, "updated": updated, "total": len(profiles)})
+}
+
+// Emojis 拉取聊天框表情面板（Redis 缓存 1 小时）。
+func (h *Handler) Emojis(c *gin.Context) {
+	account, ok := h.accountOf(c)
+	if !ok {
+		return
+	}
+	if !h.Sign.Configured() {
+		util.Fail(c, 503, "签名服务未配置")
+		return
+	}
+	if account.Status != "online" {
+		util.Fail(c, 409, "账号「"+account.Nickname+"」未登录，无法读取表情")
+		return
+	}
+	cacheKey := fmt.Sprintf("doyinspark:emoji:%d", account.ID)
+	var cached []signer.Emoji
+	if h.Cache.GetJSON(c.Request.Context(), cacheKey, &cached) && len(cached) > 0 {
+		util.OK(c, gin.H{"items": cached, "cached": true})
+		return
+	}
+	items, err := h.Sign.FetchEmojis(account.ID, account.Cookie)
+	if err != nil {
+		util.Fail(c, 502, "读取表情失败："+err.Error())
+		return
+	}
+	h.Cache.SetJSON(c.Request.Context(), cacheKey, items, time.Hour)
+	util.OK(c, gin.H{"items": items, "cached": false})
 }
 
 // LogoutAccount 下线账号并清除浏览器会话。

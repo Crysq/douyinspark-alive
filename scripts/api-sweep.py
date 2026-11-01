@@ -112,6 +112,7 @@ ACC = data["data"]["id"]
 check("账号改名", "PATCH", f"/accounts/{ACC}", 200, USER, {"nickname": "冒烟账号2", "remark": "sweep"})
 check("账号同步资料", "POST", f"/accounts/{ACC}/sync", 502, USER)
 check("同步会话-离线拦截", "POST", f"/accounts/{ACC}/sync/friends", 409, USER)
+check("表情-离线拦截", "GET", f"/accounts/{ACC}/emojis", 409, USER)
 check("账号Cookie非法", "POST", f"/accounts/{ACC}/cookie", 400, USER, {"cookie": "foo=bar"})
 check("账号-越权改名", "PATCH", f"/accounts/{ACC}", 404, ADMIN, {"nickname": "hack"})
 

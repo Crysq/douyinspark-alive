@@ -70,6 +70,7 @@ func New(h *handler.Handler, cfg *config.Config, rdb *cache.Cache) *gin.Engine {
 			auth.POST("/accounts/:id/cookie", h.ImportCookie)
 			auth.POST("/accounts/:id/sync", h.SyncAccount)
 			auth.POST("/accounts/:id/sync/friends", middleware.RateLimit(rdb, "sync", 6, time.Minute), h.SyncFriends)
+			auth.GET("/accounts/:id/emojis", h.Emojis)
 			auth.POST("/accounts/:id/logout", h.LogoutAccount)
 
 			auth.GET("/friends", h.Friends)

@@ -206,7 +206,7 @@ async function siteFetch({ accountId, cookie, url, method = 'POST', body = '', h
         body: method === 'GET' ? undefined : payload,
         credentials: 'include',
       })
-      return { status: response.status, body: (await response.text()).slice(0, 20000) }
+      return { status: response.status, body: (await response.text()).slice(0, 300000) }
     } catch (error) {
       return { status: 500, body: '', error: String(error?.message || error) }
     }
@@ -239,6 +239,151 @@ app.post('/fetch', handle(async (req) => {
   return siteFetch(req.body)
 }))
 app.post('/account/profile', handle(async (req) => accountProfile(idOf(req))))
+
+// 抓发送协议：拦截并 abort 发送请求，只记录 URL/body，不会真的发出消息
+app.post('/capture-send', handle(async (req) => {
+  const id = idOf(req)
+  const session = await ensureSession(id)
+  const page = await session.browser.newPage()
+  const http = []
+  const ws = []
+  await page.setRequestInterception(true)
+  page.on('request', (r) => {
+    const u = r.url()
+    const post = r.postData() || ''
+    if (r.method() === 'POST' && /douyin\.com/.test(u) && (/send/i.test(u) || post.includes(req.body?.text || 'ping'))) {
+      http.push({ url: u.slice(0, 400), ct: r.headers()['content-type'] || '', post: post.slice(0, 600) })
+      r.abort()
+      return
+    }
+    r.continue()
+  })
+  page.on('websocket', (socket) => {
+    socket.on('framesent', (frame) => {
+      const payload = typeof frame.payload === 'string' ? frame.payload : ''
+      if (payload && payload.length < 4000 && /send|msg|message/i.test(payload)) ws.push(payload.slice(0, 600))
+    })
+  })
+  try {
+    await page.goto('https://www.douyin.com/chat', { waitUntil: 'domcontentloaded', timeout: 45000 })
+    await sleep(6000)
+    const item = await page.$('[data-e2e="conversation-item"]')
+    if (item) { await item.click().catch(() => {}) }
+    await sleep(3000)
+    const input = await page.$('[contenteditable="true"], textarea, [data-e2e="chat-input"]')
+    if (input) {
+      await input.click().catch(() => {})
+      await page.keyboard.type(req.body?.text || 'ping', { delay: 30 })
+      await page.keyboard.press('Enter')
+    }
+    await sleep(5000)
+  } finally {
+    await page.close().catch(() => {})
+  }
+  return { http: http.slice(0, 10), ws: ws.slice(0, 10) }
+}))
+
+// 好友（会话）列表：聊天页的会话数据走 WebSocket，
+// 但页面会用 im/user/active/status 把全部会话的 sec_user_ids 一次性提交上来，
+// 这里截获这个请求体拿到会话集合，再交给 Go 侧批量换资料。
+app.post('/friends', handle(async (req) => {
+  const id = idOf(req)
+  const session = await ensureSession(id)
+  const page = await session.browser.newPage()
+  let secUserIds = []
+  page.on('request', (request) => {
+    if (request.method() !== 'POST' || !request.url().includes('im/user/active/status')) return
+    try {
+      const params = new URLSearchParams(request.postData() || '')
+      const list = JSON.parse(params.get('sec_user_ids') || '[]')
+      if (Array.isArray(list) && list.length) secUserIds = list
+    } catch { /* 忽略解析失败 */ }
+  })
+  try {
+    await page.goto('https://www.douyin.com/chat', { waitUntil: 'domcontentloaded', timeout: 45000 })
+    await sleep(Number(req.body?.waitMs || 9000))
+  } finally {
+    await page.close().catch(() => {})
+  }
+  return { secUserIds: [...new Set(secUserIds)] }
+}))
+
+// 调试用：打开聊天页，抓取页面自己发出的 IM 请求，用于对齐接口路径
+app.post('/probe', handle(async (req) => {
+  const id = idOf(req)
+  const session = await ensureSession(id)
+  const page = await session.browser.newPage()
+  const captured = []
+  const calls = []
+  page.on('request', (req) => {
+    const url = req.url()
+    if (!/\/im\/|emoji|conversation|friend|stranger/.test(url)) return
+    calls.push({ url: url.slice(0, 900), method: req.method(), post: (req.postData() || '').slice(0, 400) })
+  })
+  page.on('response', async (res) => {
+    const url = res.url()
+    if (!/\/im\/|emoji|conversation|friend/.test(url)) return
+    let body = ''
+    try {
+      const type = res.headers()['content-type'] || ''
+      if (type.includes('json')) body = (await res.text()).slice(0, 1500)
+    } catch { /* ignore */ }
+    captured.push({ url: url.slice(0, 500), status: res.status(), body })
+  })
+  try {
+    await page.goto('https://www.douyin.com/chat', { waitUntil: 'domcontentloaded', timeout: 45000 })
+    await sleep(Number(req.body?.waitMs || 9000))
+    var jsPaths
+    if (req.body?.js) {
+      jsPaths = await page.evaluate(async () => {
+        const urls = [...document.querySelectorAll('script[src]')].map((el) => el.src).filter((u) => u.includes('douyin'))
+        const found = new Set()
+        for (const u of urls.slice(0, 20)) {
+          try {
+            const txt = await (await fetch(u)).text()
+            const hit = txt.match(/\/aweme\/v1\/web\/im\/[a-zA-Z0-9_\-\/]+/g) || []
+            hit.forEach((x) => found.add(x))
+          } catch { /* ignore */ }
+        }
+        return [...found].slice(0, 200)
+      })
+    }
+    var attrsDump
+    if (req.body?.attrs) {
+      attrsDump = await page.evaluate(() => {
+        const out = []
+        for (const el of [...document.querySelectorAll('[data-e2e="conversation-item"]')].slice(0, 4)) {
+          const attrs = {}
+          for (const a of el.attributes) attrs[a.name] = String(a.value).slice(0, 120)
+          const imgs = [...el.querySelectorAll('img')].map((i) => (i.src || '').slice(0, 140))
+          out.push({ attrs, imgs, html: el.innerHTML.slice(0, 600) })
+        }
+        return out
+      })
+    }
+    if (req.body?.dom) {
+      var domItems = await page.evaluate(() => {
+        const rows = []
+        for (const el of document.querySelectorAll('[data-e2e], a[href*="/user/"], [class*="conversation"], [class*="chat-item"]')) {
+          const text = (el.textContent || '').trim().replace(/\s+/g, ' ')
+          if (!text || text.length > 80) continue
+          rows.push({
+            tag: el.tagName,
+            e2e: el.getAttribute('data-e2e') || '',
+            cls: String(el.className || '').slice(0, 70),
+            href: el.getAttribute('href') || '',
+            text,
+          })
+          if (rows.length > 120) break
+        }
+        return rows
+      })
+    }
+  } finally {
+    await page.close().catch(() => {})
+  }
+  return { captured: captured.slice(0, 40), calls: calls.slice(0, 60), dom: req.body?.dom ? domItems : undefined, attrs: attrsDump, js: jsPaths }
+}))
 app.post('/cookie/import', handle(async (req) => {
   if (!req.body?.cookie) throw new Error('cookie 必填')
   const session = await ensureSession(idOf(req))

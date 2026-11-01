@@ -6,9 +6,13 @@ import (
 	"net/url"
 )
 
+// 抖音 Web 端当前参数（旧的 19.5.0 已被网关以 "url doesn't match" 拒绝）
+const webQuery = "device_platform=webapp&aid=6383&channel=channel_pc_web&pc_client_type=1&version_code=170400&version_name=17.4.0&cookie_enabled=true&platform=PC&update_version_code=170400"
+
 const (
-	imSendEndpoint = "https://www.douyin.com/aweme/v1/web/im/send/msg/?device_platform=webapp&aid=6383&channel=channel_pc_web&pc_client_type=1&version_code=190500&version_name=19.5.0&cookie_enabled=true&platform=PC"
-	imListEndpoint = "https://www.douyin.com/aweme/v1/web/im/conversation/list/?device_platform=webapp&aid=6383&channel=channel_pc_web&pc_client_type=1&version_code=190500&version_name=19.5.0&cookie_enabled=true&platform=PC&cursor=0&count=50"
+	imSendEndpoint     = "https://www.douyin.com/aweme/v1/web/im/send/msg/?" + webQuery
+	imUserInfoEndpoint = "https://www.douyin.com/aweme/v1/web/im/user/info/?" + webQuery
+	emojiListEndpoint  = "https://www.douyin.com/aweme/v1/web/emoji/list?" + webQuery + "&need_all=true"
 )
 
 // IMMessage 私信接口返回体。
@@ -58,85 +62,136 @@ func (c *Client) SendIM(accountID uint, cookie, toUserID, text string) error {
 	return nil
 }
 
-// Conversation 会话列表中的好友。
-type Conversation struct {
-	UserID    string `json:"userId"`
-	Nickname  string `json:"nickname"`
+// FriendProfile 会话好友资料（由 sec_uid 批量换取）。
+type FriendProfile struct {
+	UID       string `json:"uid"`
 	SecUID    string `json:"secUid"`
 	UniqueID  string `json:"uniqueId"`
+	Nickname  string `json:"nickname"`
 	AvatarURL string `json:"avatarUrl"`
 }
 
-// FetchConversations 拉取私信会话列表（用于一键同步好友）。
-// 抖音接口字段会变，这里做了宽松解析，解析不到就返回空列表交给前端手动添加。
-func (c *Client) FetchConversations(accountID uint, cookie string) ([]Conversation, error) {
-	res, err := c.Fetch(accountID, cookie, imListEndpoint, "GET", "", nil)
-	if err != nil {
+// FetchFriendSecUIDs 从聊天页截获当前账号的全部会话 sec_uid。
+func (c *Client) FetchFriendSecUIDs(accountID uint) ([]string, error) {
+	var out struct {
+		SecUserIDs []string `json:"secUserIds"`
+	}
+	if err := c.post("/friends", map[string]any{"accountId": accountID, "waitMs": 9000}, &out); err != nil {
 		return nil, err
 	}
-	if res.Status != 200 {
-		return nil, fmt.Errorf("会话接口返回 %d", res.Status)
+	if len(out.SecUserIDs) == 0 {
+		return nil, fmt.Errorf("聊天页没有返回会话，请确认账号已登录且能打开 douyin.com/chat")
 	}
-	var raw struct {
-		Data struct {
-			Conversations []map[string]any `json:"conversation_list"`
-			List          []map[string]any `json:"conversations"`
-		} `json:"data"`
-		ConversationList []map[string]any `json:"conversation_list"`
+	return out.SecUserIDs, nil
+}
+
+type imUserInfoRow struct {
+	Nickname    string `json:"nickname"`
+	SecUID      string `json:"sec_uid"`
+	UniqueID    string `json:"unique_id"`
+	ShortID     string `json:"short_id"`
+	UID         any    `json:"uid"`
+	AvatarThumb struct {
+		URLList []string `json:"url_list"`
+	} `json:"avatar_thumb"`
+	AvatarSmall struct {
+		URLList []string `json:"url_list"`
+	} `json:"avatar_small"`
+}
+
+// FetchFriendProfiles 用 sec_uid 批量换取昵称 / 数字 user_id / 头像。
+func (c *Client) FetchFriendProfiles(accountID uint, cookie string, secUIDs []string) ([]FriendProfile, error) {
+	if len(secUIDs) == 0 {
+		return nil, nil
 	}
-	if err := json.Unmarshal([]byte(res.Body), &raw); err != nil {
-		return nil, fmt.Errorf("会话数据解析失败")
-	}
-	rows := raw.Data.Conversations
-	if len(rows) == 0 {
-		rows = raw.Data.List
-	}
-	if len(rows) == 0 {
-		rows = raw.ConversationList
-	}
-	out := make([]Conversation, 0, len(rows))
-	for _, row := range rows {
-		user, _ := row["user"].(map[string]any)
-		if user == nil {
-			user = row
+	out := make([]FriendProfile, 0, len(secUIDs))
+	// 接口按批处理，控制单次数量，避免 URL/表单过大
+	const batch = 20
+	for start := 0; start < len(secUIDs); start += batch {
+		end := start + batch
+		if end > len(secUIDs) {
+			end = len(secUIDs)
 		}
-		conv := Conversation{
-			UserID:    firstString(user, "user_id", "uid", "id"),
-			Nickname:  firstString(user, "nickname", "name"),
-			SecUID:    firstString(user, "sec_uid", "secUid"),
-			UniqueID:  firstString(user, "unique_id", "short_id"),
-			AvatarURL: firstAvatar(user),
+		raw, _ := json.Marshal(secUIDs[start:end])
+		form := url.Values{}
+		form.Set("sec_user_ids", string(raw))
+		res, err := c.Fetch(accountID, cookie, imUserInfoEndpoint, "POST", form.Encode(), map[string]string{
+			"content-type": "application/x-www-form-urlencoded",
+		})
+		if err != nil {
+			return out, err
 		}
-		if conv.UserID != "" && conv.Nickname != "" {
-			out = append(out, conv)
+		if res.Status != 200 {
+			return out, fmt.Errorf("用户资料接口返回 %d", res.Status)
+		}
+		var parsed struct {
+			Data []imUserInfoRow `json:"data"`
+		}
+		if err := json.Unmarshal([]byte(res.Body), &parsed); err != nil {
+			return out, fmt.Errorf("用户资料解析失败")
+		}
+		for _, row := range parsed.Data {
+			uid := ""
+			switch v := row.UID.(type) {
+			case float64:
+				uid = fmt.Sprintf("%.0f", v)
+			case string:
+				uid = v
+			}
+			avatar := ""
+			if len(row.AvatarThumb.URLList) > 0 {
+				avatar = row.AvatarThumb.URLList[0]
+			} else if len(row.AvatarSmall.URLList) > 0 {
+				avatar = row.AvatarSmall.URLList[0]
+			}
+			uniqueID := row.UniqueID
+			if uniqueID == "" {
+				uniqueID = row.ShortID
+			}
+			out = append(out, FriendProfile{UID: uid, SecUID: row.SecUID, UniqueID: uniqueID, Nickname: row.Nickname, AvatarURL: avatar})
 		}
 	}
 	return out, nil
 }
 
-func firstString(row map[string]any, keys ...string) string {
-	for _, key := range keys {
-		switch value := row[key].(type) {
-		case string:
-			if value != "" {
-				return value
-			}
-		case float64:
-			return fmt.Sprintf("%.0f", value)
-		}
-	}
-	return ""
+// Emoji 聊天框表情。
+type Emoji struct {
+	Name string `json:"name"` // 例如 [鲸鱼点赞]
+	URI  string `json:"uri"`
+	URL  string `json:"url"`
 }
 
-func firstAvatar(row map[string]any) string {
-	for _, key := range []string{"avatar_larger", "avatar_thumb", "avatar_medium"} {
-		if obj, ok := row[key].(map[string]any); ok {
-			if list, ok := obj["url_list"].([]any); ok && len(list) > 0 {
-				if url, ok := list[0].(string); ok {
-					return url
-				}
-			}
-		}
+// FetchEmojis 拉取聊天框表情面板（原生 emoji 列表）。
+func (c *Client) FetchEmojis(accountID uint, cookie string) ([]Emoji, error) {
+	res, err := c.Fetch(accountID, cookie, emojiListEndpoint, "GET", "", nil)
+	if err != nil {
+		return nil, err
 	}
-	return ""
+	if res.Status != 200 {
+		return nil, fmt.Errorf("表情接口返回 %d", res.Status)
+	}
+	var parsed struct {
+		EmojiList []struct {
+			DisplayName string `json:"display_name"`
+			OriginURI   string `json:"origin_uri"`
+			EmojiURL    struct {
+				URLList []string `json:"url_list"`
+			} `json:"emoji_url"`
+		} `json:"emoji_list"`
+	}
+	if err := json.Unmarshal([]byte(res.Body), &parsed); err != nil {
+		return nil, fmt.Errorf("表情数据解析失败")
+	}
+	out := make([]Emoji, 0, len(parsed.EmojiList))
+	for _, item := range parsed.EmojiList {
+		url := ""
+		if len(item.EmojiURL.URLList) > 0 {
+			url = item.EmojiURL.URLList[0]
+		}
+		if item.DisplayName == "" {
+			continue
+		}
+		out = append(out, Emoji{Name: item.DisplayName, URI: item.OriginURI, URL: url})
+	}
+	return out, nil
 }

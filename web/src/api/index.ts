@@ -60,6 +60,7 @@ export const accountApi = {
   cookie: (id: number, cookie: string) => post<null>(`/accounts/${id}/cookie`, { cookie }),
   sync: (id: number) => post<null>(`/accounts/${id}/sync`),
   syncFriends: (id: number) => post<{ created: number; updated: number; total: number }>(`/accounts/${id}/sync/friends`),
+  emojis: (id: number) => get<{ items: { name: string; uri: string; url: string }[]; cached: boolean }>(`/accounts/${id}/emojis`),
   logout: (id: number) => post<null>(`/accounts/${id}/logout`),
 }
 
