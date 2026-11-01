@@ -1,0 +1,13 @@
+{
+  "name": "doyinspark-sign",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "DoyinSpark 浏览器签名服务：登录态 + a_bogus 签名 + 站内请求",
+  "main": "server.mjs",
+  "scripts": { "start": "node server.mjs" },
+  "dependencies": {
+    "express": "^4.21.2",
+    "puppeteer-core": "^23.11.1"
+  }
+}

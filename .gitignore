@@ -1,0 +1,8 @@
+node_modules/
+dist/
+server/data/
+sign-service/profiles/
+*.log
+.DS_Store
+.env
+shots/

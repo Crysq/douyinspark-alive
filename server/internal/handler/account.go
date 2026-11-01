@@ -1,0 +1,288 @@
+package handler
+
+import (
+	"time"
+
+	"github.com/gin-gonic/gin"
+
+	"doyinspark/internal/model"
+	"doyinspark/internal/service"
+	"doyinspark/internal/util"
+)
+
+// AccountView 账号列表项，附带统计。
+type AccountView struct {
+	model.Account
+	FriendCount int `json:"friendCount"`
+	SparkCount  int `json:"sparkCount"`
+	BrokenCount int `json:"brokenCount"`
+}
+
+// Accounts 当前用户的账号列表。
+func (h *Handler) Accounts(c *gin.Context) {
+	userID := uid(c)
+	var accounts []model.Account
+	h.DB.Where("user_id = ?", userID).Order("id asc").Find(&accounts)
+	now := time.Now().In(h.Cfg.Location)
+	cutoff := now.Add(-service.SparkWindow)
+
+	out := make([]AccountView, 0, len(accounts))
+	for _, account := range accounts {
+		view := AccountView{Account: account}
+		var total, broken int64
+		h.DB.Model(&model.Friend{}).Where("account_id = ? AND user_id = ?", account.ID, userID).Count(&total)
+		h.DB.Model(&model.Friend{}).Where("account_id = ? AND user_id = ? AND (last_interact_at IS NULL OR last_interact_at < ?)", account.ID, userID, cutoff).Count(&broken)
+		view.FriendCount = int(total)
+		view.BrokenCount = int(broken)
+		view.SparkCount = int(total - broken)
+		out = append(out, view)
+	}
+	util.OK(c, out)
+}
+
+type accountReq struct {
+	Nickname string `json:"nickname"`
+	Remark   string `json:"remark"`
+	Cookie   string `json:"cookie"`
+}
+
+// CreateAccount 新增托管账号。
+func (h *Handler) CreateAccount(c *gin.Context) {
+	var req accountReq
+	if err := c.ShouldBindJSON(&req); err != nil || req.Nickname == "" {
+		util.Fail(c, 400, "请填写账号名称")
+		return
+	}
+	account := model.Account{UserID: uid(c), Nickname: req.Nickname, Remark: req.Remark, Status: "offline"}
+	if err := h.DB.Create(&account).Error; err != nil {
+		util.Fail(c, 500, "创建账号失败")
+		return
+	}
+	if req.Cookie != "" {
+		if status, err := h.Sign.ImportCookie(account.ID, req.Cookie); err == nil && status.Logged {
+			h.DB.Model(&account).Updates(map[string]any{"cookie": req.Cookie, "status": "online"})
+			account.Status = "online"
+			_ = h.syncProfile(&account)
+		}
+	}
+	h.audit(c, "account.create", req.Nickname, "新增托管账号")
+	util.OK(c, account)
+}
+
+// UpdateAccount 修改账号信息。
+func (h *Handler) UpdateAccount(c *gin.Context) {
+	var req accountReq
+	if err := c.ShouldBindJSON(&req); err != nil {
+		util.Fail(c, 400, "参数错误")
+		return
+	}
+	updates := map[string]any{}
+	if req.Nickname != "" {
+		updates["nickname"] = req.Nickname
+	}
+	updates["remark"] = req.Remark
+	res := h.DB.Model(&model.Account{}).Where("id = ? AND user_id = ?", c.Param("id"), uid(c)).Updates(updates)
+	if res.RowsAffected == 0 {
+		util.Fail(c, 404, "账号不存在")
+		return
+	}
+	h.audit(c, "account.update", c.Param("id"), "更新账号信息")
+	util.OKMsg(c, "已保存", nil)
+}
+
+// DeleteAccount 删除账号及其好友。
+func (h *Handler) DeleteAccount(c *gin.Context) {
+	account, ok := h.accountOf(c)
+	if !ok {
+		return
+	}
+	if h.Sign.Configured() {
+		_ = h.Sign.Logout(account.ID)
+	}
+	h.DB.Where("account_id = ?", account.ID).Delete(&model.Friend{})
+	h.DB.Where("account_id = ?", account.ID).Delete(&model.Task{})
+	h.DB.Delete(&account)
+	h.audit(c, "account.delete", account.Nickname, "删除账号")
+	util.OKMsg(c, "账号已删除", nil)
+}
+
+// LoginQR 打开扫码登录并返回二维码。
+func (h *Handler) LoginQR(c *gin.Context) {
+	account, ok := h.accountOf(c)
+	if !ok {
+		return
+	}
+	if !h.Sign.Configured() {
+		util.Fail(c, 503, "签名服务未配置，无法发起登录")
+		return
+	}
+	result, err := h.Sign.OpenLogin(account.ID)
+	if err != nil {
+		util.Fail(c, 502, err.Error())
+		return
+	}
+	if result.Logged {
+		h.markOnline(account)
+	}
+	util.OK(c, gin.H{"logged": result.Logged, "dataUrl": result.DataURL, "fallback": result.Fallback})
+}
+
+// LoginStatus 轮询扫码结果。
+func (h *Handler) LoginStatus(c *gin.Context) {
+	account, ok := h.accountOf(c)
+	if !ok {
+		return
+	}
+	if !h.Sign.Configured() {
+		util.Fail(c, 503, "签名服务未配置")
+		return
+	}
+	status, err := h.Sign.AccountStatus(account.ID)
+	if err != nil {
+		util.Fail(c, 502, err.Error())
+		return
+	}
+	if status.Logged {
+		h.markOnline(account)
+	}
+	util.OK(c, gin.H{"logged": status.Logged, "cookieCount": status.CookieCount})
+}
+
+// ImportCookie 导入完整 Cookie 登录。
+func (h *Handler) ImportCookie(c *gin.Context) {
+	account, ok := h.accountOf(c)
+	if !ok {
+		return
+	}
+	var req struct {
+		Cookie string `json:"cookie" binding:"required"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		util.Fail(c, 400, "请粘贴完整 Cookie")
+		return
+	}
+	status, err := h.Sign.ImportCookie(account.ID, req.Cookie)
+	if err != nil {
+		util.Fail(c, 502, err.Error())
+		return
+	}
+	if !status.Logged {
+		h.DB.Model(account).Update("status", "expired")
+		util.Fail(c, 400, "Cookie 已导入，但没有找到 sessionid，请确认复制完整")
+		return
+	}
+	h.DB.Model(account).Updates(map[string]any{"cookie": req.Cookie, "status": "online"})
+	account.Status = "online"
+	_ = h.syncProfile(account)
+	h.audit(c, "account.cookie", account.Nickname, "导入 Cookie")
+	util.OKMsg(c, "登录态已导入", nil)
+}
+
+// SyncAccount 同步账号资料。
+func (h *Handler) SyncAccount(c *gin.Context) {
+	account, ok := h.accountOf(c)
+	if !ok {
+		return
+	}
+	if err := h.syncProfile(account); err != nil {
+		util.Fail(c, 502, err.Error())
+		return
+	}
+	util.OKMsg(c, "资料已同步", account)
+}
+
+// SyncFriends 从私信会话同步好友。
+func (h *Handler) SyncFriends(c *gin.Context) {
+	account, ok := h.accountOf(c)
+	if !ok {
+		return
+	}
+	if !h.Sign.Configured() {
+		util.Fail(c, 503, "签名服务未配置，请先启动 sign-service")
+		return
+	}
+	if account.Status != "online" {
+		util.Fail(c, 409, "账号「"+account.Nickname+"」还未登录，请先扫码登录后再同步会话")
+		return
+	}
+	conversations, err := h.Sign.FetchConversations(account.ID, account.Cookie)
+	if err != nil {
+		util.Fail(c, 502, "同步失败："+err.Error())
+		return
+	}
+	created, updated := 0, 0
+	for _, conv := range conversations {
+		var friend model.Friend
+		err := h.DB.Where("account_id = ? AND friend_user_id = ?", account.ID, conv.UserID).First(&friend).Error
+		if err != nil {
+			h.DB.Create(&model.Friend{
+				UserID: uid(c), AccountID: account.ID, Name: conv.Nickname, DouyinUserID: conv.UserID,
+				SecUID: conv.SecUID, UniqueID: conv.UniqueID, AvatarURL: conv.AvatarURL, AutoKeep: true,
+			})
+			created++
+			continue
+		}
+		h.DB.Model(&friend).Updates(map[string]any{
+			"name": conv.Nickname, "avatar_url": conv.AvatarURL, "sec_uid": conv.SecUID, "unique_id": conv.UniqueID,
+		})
+		updated++
+	}
+	now := time.Now()
+	h.DB.Model(account).Update("last_sync_at", now)
+	h.audit(c, "account.sync", account.Nickname, "同步好友")
+	util.OKMsg(c, "同步完成", gin.H{"created": created, "updated": updated, "total": len(conversations)})
+}
+
+// LogoutAccount 下线账号并清除浏览器会话。
+func (h *Handler) LogoutAccount(c *gin.Context) {
+	account, ok := h.accountOf(c)
+	if !ok {
+		return
+	}
+	if h.Sign.Configured() {
+		_ = h.Sign.Logout(account.ID)
+	}
+	h.DB.Model(account).Updates(map[string]any{"status": "offline", "cookie": ""})
+	h.audit(c, "account.logout", account.Nickname, "下线账号")
+	util.OKMsg(c, "已下线", nil)
+}
+
+func (h *Handler) accountOf(c *gin.Context) (*model.Account, bool) {
+	var account model.Account
+	if err := h.DB.Where("id = ? AND user_id = ?", c.Param("id"), uid(c)).First(&account).Error; err != nil {
+		util.Fail(c, 404, "账号不存在")
+		return nil, false
+	}
+	return &account, true
+}
+
+func (h *Handler) markOnline(account *model.Account) {
+	h.DB.Model(account).Update("status", "online")
+	account.Status = "online"
+	_ = h.syncProfile(account)
+}
+
+func (h *Handler) syncProfile(account *model.Account) error {
+	if !h.Sign.Configured() {
+		return nil
+	}
+	profile, err := h.Sign.AccountProfile(account.ID)
+	if err != nil {
+		return err
+	}
+	now := time.Now()
+	updates := map[string]any{
+		"douyin_uid": profile.UID, "unique_id": profile.UniqueID,
+		"sec_uid": profile.SecUID, "avatar_url": profile.AvatarURL, "last_sync_at": now,
+	}
+	if profile.Nickname != "" {
+		updates["nickname"] = profile.Nickname
+	}
+	h.DB.Model(account).Updates(updates)
+	if profile.Nickname != "" {
+		account.Nickname = profile.Nickname
+	}
+	account.AvatarURL = profile.AvatarURL
+	account.UniqueID = profile.UniqueID
+	return nil
+}

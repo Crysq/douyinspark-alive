@@ -1,0 +1,87 @@
+# DoyinSpark 一键部署
+#
+#   docker compose up -d --build
+#   控制台 http://localhost:8790   （admin / admin123）
+#
+# 四个服务：app（Go+前端）、mysql、redis、sign（Chromium 签名通道）
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: doyinspark-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_PASSWORD:-doyinspark}
+      MYSQL_DATABASE: doyinspark
+      TZ: Asia/Shanghai
+      MYSQL_CHARACTER_SET_SERVER: utf8mb4
+      MYSQL_COLLATION_SERVER: utf8mb4_unicode_ci
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-p${MYSQL_PASSWORD:-doyinspark}"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    container_name: doyinspark-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1"]
+    volumes:
+      - redis-data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+
+  sign:
+    build:
+      context: ./sign-service
+    container_name: doyinspark-sign
+    restart: unless-stopped
+    shm_size: "1gb"
+    environment:
+      PORT: 9100
+      HEADLESS: "false"
+      PROFILE_DIR: /app/profiles
+      TZ: Asia/Shanghai
+    volumes:
+      - ./sign-service/profiles:/app/profiles
+    expose:
+      - "9100"
+
+  app:
+    build:
+      context: .
+      args:
+        GOPROXY: ${GOPROXY:-https://goproxy.cn,direct}
+    container_name: doyinspark-app
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      sign:
+        condition: service_started
+    environment:
+      PORT: 8787
+      TZ: Asia/Shanghai
+      DB_DSN: root:${MYSQL_PASSWORD:-doyinspark}@tcp(mysql:3306)/doyinspark?charset=utf8mb4&parseTime=True&loc=Local
+      REDIS_ADDR: redis:6379
+      JWT_SECRET: ${JWT_SECRET:-please-change-this-secret-in-production}
+      ALLOW_ORIGIN: ${ALLOW_ORIGIN:-*}
+      SIGN_SERVICE_URL: http://sign:9100
+      TICK_SECONDS: "20"
+    ports:
+      - "${APP_PORT:-8790}:8787"
+
+volumes:
+  mysql-data:
+  redis-data:
