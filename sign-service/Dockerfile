@@ -14,18 +14,20 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
       chromium xvfb x11-utils xauth dumb-init \
+      x11vnc novnc python3-websockify \
       fonts-noto-cjk fonts-noto-color-emoji ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
 COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev --no-audit --no-fund && npm cache clean --force
-COPY server.mjs ./
-RUN mkdir -p /app/profiles
+COPY server.mjs entrypoint.sh ./
+RUN chmod +x entrypoint.sh && mkdir -p /app/profiles
 
 HEALTHCHECK --interval=30s --timeout=5s --start-period=40s --retries=3 \
   CMD node -e "fetch('http://127.0.0.1:'+(process.env.PORT||9100)+'/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 EXPOSE 9100
+EXPOSE 6080
 ENTRYPOINT ["dumb-init", "--"]
-CMD ["xvfb-run", "-a", "-s", "-screen 0 1400x900x24", "node", "server.mjs"]
+CMD ["./entrypoint.sh"]

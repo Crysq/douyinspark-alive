@@ -70,6 +70,35 @@ Node(签名服务) ──cookie──► POST https://imapi.douyin.com/<send pat
 `/imapi-probe` 已经能带 Cookie 发任意 protobuf 请求，Go 侧 `signer` 也已把 404 映射成
 可读错误；只要补齐 proto 编码即可替换 `SendIM`，调度/幂等/重试/记录都不用改。
 
+### 发送协议（已解出）
+
+真实发送请求（用户浏览器抓包，已按字节还原）：
+
+```
+POST https://imapi.douyin.com/v1/message/send?msToken=…&a_bogus=…&verifyFp=…&fp=…
+content-type: application/x-protobuf
+
+信封:  field1=100 (IMCMD.SEND_MESSAGE)  field2=10237 (方法号)
+       field3="0.1.8"  field5=3  field7="0d50935:feat/pc-im-group"
+       field8 = { field100: 内层 }
+内层:  f1 = "0:1:<对方uid>:<自己uid>"   // 会话 ID
+       f2 = 1
+       f3 = 纳秒时间戳 (varint)
+       f4 = {"aweType":700,"type":0,"richTextInfos":[],"text":"…"}
+       f5 = [ {s:mentioned_users: ""}, {s:client_message_id: <uuid>}, {s:stime: "<ms>.<us>"} ]
+       尾部 = 40 字节不透明（含 msg_type=7 与一段 token）
+```
+
+必需请求头：`bd-ticket-guard-client-data`（设备级签名，由页面安全 SDK 在**发请求瞬间**生成）、
+`bd-ticket-guard-ree-public-key`、`bd-ticket-guard-version`、`bd-ticket-guard-web-sign-type`、
+`bd-ticket-guard-web-version`，以及 `a_bogus`/`msToken` 签名。
+
+已打通：信封构造、内层字段、时间戳与 UUID 生成、`a_bogus`（frontierSign）、
+`securitySDK.getBdTicketGuardHeader` 的 5 个常驻头。
+
+未打通：`bd-ticket-guard-client-data` —— 页面 SDK 的 fetch 拦截器在请求发出前注入，
+直接调用 SDK 的公开方法拿不到；从页面内 `fetch` 直连 imapi 会被 CORS 拦（`Failed to fetch`）。
+
 ## 发送的现状与两条路线
 
 **现状**：发送请求走 `imapi.douyin.com/v1/message/*`，`content-type: application/x-protobuf`，

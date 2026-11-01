@@ -64,6 +64,38 @@ async function ensureSession(value) {
     })
     const pages = await browser.pages()
     session.page = pages[0] || await browser.newPage()
+    session.capture = []
+    session.wsFrames = []
+    const attachCapture = (page) => {
+      if (!page || page.__capturing) return
+      page.__capturing = true
+      page.on('request', (request) => {
+        try {
+          const url = request.url()
+          if (!url.includes('imapi.douyin.com')) return
+          const post = request.postData() || ''
+          if (session.capture.length > 60) session.capture.shift()
+          session.capture.push({
+            at: new Date().toISOString(), url: url.slice(0, 300), method: request.method(),
+            ct: request.headers()['content-type'] || '',
+            bodyB64: post ? Buffer.from(post, 'latin1').toString('base64') : '',
+            bodyText: post ? post.slice(0, 200) : '',
+          })
+        } catch (e) { /* 捕获失败不影响主流程 */ }
+      })
+      page.on('websocket', (ws) => {
+        try {
+          ws.on('framesent', (f) => {
+            if (session.wsFrames.length > 80) session.wsFrames.shift()
+            session.wsFrames.push({ at: new Date().toISOString(), url: ws.url().slice(0, 200), payload: typeof f.payload === 'string' ? f.payload.slice(0, 500) : '[binary]' })
+          })
+        } catch (e) { }
+      })
+    }
+    attachCapture(session.page)
+    browser.on('targetcreated', async (target) => {
+      try { const p = await target.page(); if (p) attachCapture(p) } catch (e) { }
+    })
     await session.page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
     })
@@ -240,6 +272,210 @@ app.post('/fetch', handle(async (req) => {
 }))
 app.post('/account/profile', handle(async (req) => accountProfile(idOf(req))))
 
+// 记录聊天页建立的 WebSocket（地址 + 前几帧）
+app.post('/ws-record', handle(async (req) => {
+  const id = idOf(req)
+  const session = await ensureSession(id)
+  const page = await session.browser.newPage()
+  const sockets = []
+  page.on('websocket', (ws) => {
+    const rec = { url: ws.url().slice(0, 300), sent: [], received: 0 }
+    sockets.push(rec)
+    ws.on('framesent', (f) => { if (rec.sent.length < 8) rec.sent.push(typeof f.payload === 'string' ? f.payload.slice(0, 300) : '[bin]') })
+    ws.on('framereceived', () => { rec.received += 1 })
+  })
+  try {
+    await page.goto('https://www.douyin.com/chat', { waitUntil: 'domcontentloaded', timeout: 45000 })
+    await sleep(Number(req.body?.seconds || 12) * 1000)
+  } finally {
+    await page.close().catch(() => {})
+  }
+  return { sockets: sockets.slice(0, 6) }
+}))
+
+// 录制一次真实发送请求（人工在 noVNC 里点发送时触发，监听所有页面）
+app.get('/captured', handle(async (req) => {
+  const session = await ensureSession(idOf(req))
+  return { http: (session.capture || []).slice(-20), ws: (session.wsFrames || []).slice(-20) }
+}))
+
+app.post('/record-send', handle(async (req) => {
+  const id = idOf(req)
+  const session = await ensureSession(id)
+  const hits = []
+  const wsHits = []
+  const attach = (page) => {
+    page.on('request', (request) => {
+      const url = request.url()
+      if (!/imapi\.douyin\.com/.test(url)) return
+      const post = request.postData() || ''
+      hits.push({
+        url: url.slice(0, 300), method: request.method(),
+        ct: request.headers()['content-type'] || '',
+        bodyB64: post ? Buffer.from(post, 'latin1').toString('base64') : '',
+      })
+    })
+    page.on('websocket', (ws) => {
+      ws.on('framesent', (f) => {
+        if (wsHits.length > 40) return
+        wsHits.push({ url: ws.url().slice(0, 200), payload: typeof f.payload === 'string' ? f.payload.slice(0, 600) : '[binary]' })
+      })
+    })
+  }
+  const pages = await session.browser.pages()
+  pages.forEach(attach)
+  const onTarget = async (target) => {
+    try { const page = await target.page(); if (page) attach(page) } catch (e) { }
+  }
+  session.browser.on('targetcreated', onTarget)
+  const seconds = Math.min(900, Number(req.body?.seconds || 120))
+  try {
+    await sleep(seconds * 1000)
+  } finally {
+    session.browser.off('targetcreated', onTarget)
+  }
+  return { http: hits.filter((h) => /send|create/i.test(h.url)).slice(0, 5), allHttp: hits.slice(0, 12), ws: wsHits.slice(0, 20), waited: seconds }
+}))
+
+// 用页面签名能力给 imapi 请求签名（a_bogus / msToken），再由 Node 发出
+app.post('/signed-send', handle(async (req) => {
+  const id = idOf(req)
+  const session = await ensureSession(id)
+  let bodyBuf
+  if (req.body?.bodyB64) {
+    bodyBuf = Buffer.from(req.body.bodyB64, 'base64')
+  } else throw new Error('需要 bodyB64')
+
+  const query = req.body?.query || ''
+  const baseURL = 'https://imapi.douyin.com' + (req.body?.path || '/v1/message/send') + (query ? '?' + query : '')
+  const bin = bodyBuf.toString('latin1')
+
+  // 确保页面在 douyin.com 主域，securitySDK 才会加载
+  try {
+    const hasSDK = await session.page.evaluate(() => typeof window.securitySDK !== 'undefined')
+    if (!hasSDK || !session.page.url().includes('douyin.com')) {
+      await session.page.goto('https://www.douyin.com/', { waitUntil: 'domcontentloaded', timeout: 45000 })
+      await sleep(4000)
+    }
+  } catch (e) { /* ignore */ }
+
+  // 页面里同时生成 a_bogus 与 bd-ticket-guard 头
+  const pageOut = await session.page.evaluate(async ({ url, data }) => {
+    const out = { params: {}, guard: {}, msToken: '' }
+    try {
+      const ac = window.byted_acrawler
+      if (ac && typeof ac.frontierSign === 'function') out.params = ac.frontierSign({ url, data, method: 'POST' }) || {}
+    } catch (e) { out.sigError = String(e && e.message || e) }
+    try {
+      const sdk = window.securitySDK
+      if (sdk && typeof sdk.getBdTicketGuardHeader === 'function') {
+        const res = await sdk.getBdTicketGuardHeader(url, data)
+        out.guard = (res && res.bdTicketGuardHeaders) || {}
+      }
+    } catch (e) { out.guardError = String(e && e.message || e) }
+    try {
+      const m = document.cookie.match(/(?:^|;\s*)msToken=([^;]+)/)
+      if (m) out.msToken = m[1]
+    } catch (e) { }
+    return out
+  }, { url: baseURL, data: bin })
+
+  const u = new URL(baseURL)
+  for (const [k, v] of Object.entries(pageOut.params || {})) u.searchParams.set(k, String(v))
+  if (pageOut.msToken && !u.searchParams.get('msToken')) u.searchParams.set('msToken', pageOut.msToken)
+  if (req.body?.query) for (const [k, v] of new URLSearchParams(req.body.query)) if (!u.searchParams.get(k)) u.searchParams.set(k, v)
+
+  const client = await session.page.createCDPSession()
+  let cookieHeader = ''
+  try {
+    const { cookies } = await client.send('Network.getAllCookies')
+    cookieHeader = cookies.filter((c) => c.domain.endsWith('douyin.com')).map((c) => `${c.name}=${c.value}`).join('; ')
+  } finally { await client.detach().catch(() => {}) }
+
+  const headers = {
+    'content-type': 'application/x-protobuf',
+    accept: 'application/x-protobuf',
+    origin: 'https://www.douyin.com',
+    referer: 'https://www.douyin.com/',
+    'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36 Edg/156.0.0.0',
+    'accept-language': 'zh-Hans-CN,zh-CN;q=0.9,zh;q=0.8,en;q=0.7',
+    cookie: cookieHeader,
+    ...(pageOut.guard || {}),
+  }
+  const res = await fetch(u.toString(), { method: 'POST', headers, body: bodyBuf })
+  const buf = Buffer.from(await res.arrayBuffer())
+  return {
+    status: res.status, size: buf.length, hex: buf.slice(0, 40).toString('hex'),
+    printable: buf.toString('latin1').replace(/[^\x20-\x7e]/g, ' ').slice(0, 300),
+    signKeys: Object.keys(pageOut.params || {}), guardKeys: Object.keys(pageOut.guard || {}),
+  }
+}))
+
+// 用真实信封拼装请求：保留字段 1-7 与元数据，只替换字段 8 的 payload
+function varint(n) {
+  const out = []
+  let v = n
+  while (v > 127) { out.push((v & 0x7f) | 0x80); v = Math.floor(v / 128) }
+  out.push(v)
+  return Buffer.from(out)
+}
+
+function spliceField8(template, payload) {
+  // 定位 tag 0x42（field 8, wire type 2）
+  let i = 0
+  while (i < template.length) {
+    const tagStart = i
+    let tag = 0, shift = 0, b
+    do { b = template[i++]; tag |= (b & 0x7f) << shift; shift += 7 } while (b & 0x80)
+    const field = tag >> 3, wire = tag & 7
+    if (wire === 2) {
+      let len = 0; shift = 0
+      do { b = template[i++]; len |= (b & 0x7f) << shift; shift += 7 } while (b & 0x80)
+      if (field === 8) {
+        return Buffer.concat([template.slice(0, tagStart), Buffer.from([0x42]), varint(payload.length), payload, template.slice(i + len)])
+      }
+      i += len
+    } else if (wire === 0) {
+      do { b = template[i++] } while (b & 0x80)
+    } else if (wire === 5) { i += 4 } else if (wire === 1) { i += 8 } else { break }
+  }
+  return null
+}
+
+app.post('/splice-send', handle(async (req) => {
+  const id = idOf(req)
+  const session = await ensureSession(id)
+  const captured = (session.capture || []).filter((c) => /get_user_message|get_conversation_list|get_message_by_init/.test(c.url))
+  if (!captured.length) throw new Error('还没有可用的真实信封，请先在聊天页加载一次')
+  const template = Buffer.from(captured[captured.length - 1].bodyB64, 'base64')
+  const payload = Buffer.from(req.body?.payloadHex || '', 'hex')
+  const body = spliceField8(template, payload)
+  if (!body) throw new Error('信封里没找到字段 8')
+  const client = await session.page.createCDPSession()
+  let cookieHeader = ''
+  try {
+    const { cookies } = await client.send('Network.getAllCookies')
+    cookieHeader = cookies.filter((c) => c.domain.endsWith('douyin.com')).map((c) => `${c.name}=${c.value}`).join('; ')
+  } finally {
+    await client.detach().catch(() => {})
+  }
+  const res = await fetch('https://imapi.douyin.com' + (req.body?.path || '/v1/message/send_message'), {
+    method: 'POST',
+    headers: {
+      'content-type': 'application/x-protobuf',
+      accept: 'application/x-protobuf',
+      origin: 'https://www.douyin.com',
+      referer: 'https://www.douyin.com/chat',
+      'user-agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36',
+      cookie: cookieHeader,
+    },
+    body,
+  })
+  const buf = Buffer.from(await res.arrayBuffer())
+  const printable = buf.toString('latin1').replace(/[^\x20-\x7e]/g, ' ')
+  return { status: res.status, size: buf.length, hex: buf.slice(0, 40).toString('hex'), printable: printable.slice(0, 300) }
+}))
+
 // 直接探测 imapi（Node 侧带 Cookie，不受 CORS 限制）
 app.post('/imapi-probe', handle(async (req) => {
   const id = idOf(req)
@@ -337,6 +573,58 @@ app.post('/capture-send-safe', handle(async (req) => {
   } finally {
     await page.close().catch(() => {})
   }
+}))
+
+// 记录聊天页建立的 WebSocket（地址 + 前几帧）
+app.post('/ws-record', handle(async (req) => {
+  const id = idOf(req)
+  const session = await ensureSession(id)
+  const page = await session.browser.newPage()
+  const sockets = []
+  page.on('websocket', (ws) => {
+    const rec = { url: ws.url().slice(0, 300), sent: [], received: 0 }
+    sockets.push(rec)
+    ws.on('framesent', (f) => { if (rec.sent.length < 8) rec.sent.push(typeof f.payload === 'string' ? f.payload.slice(0, 300) : '[bin]') })
+    ws.on('framereceived', () => { rec.received += 1 })
+  })
+  try {
+    await page.goto('https://www.douyin.com/chat', { waitUntil: 'domcontentloaded', timeout: 45000 })
+    await sleep(Number(req.body?.seconds || 12) * 1000)
+  } finally {
+    await page.close().catch(() => {})
+  }
+  return { sockets: sockets.slice(0, 6) }
+}))
+
+// 录制一次真实发送请求（人工在 noVNC 里点发送时触发）
+app.get('/captured', handle(async (req) => {
+  const session = await ensureSession(idOf(req))
+  return { http: (session.capture || []).slice(-20), ws: (session.wsFrames || []).slice(-20) }
+}))
+
+app.post('/record-send', handle(async (req) => {
+  const id = idOf(req)
+  const session = await ensureSession(id)
+  const hits = []
+  const handler = (request) => {
+    const url = request.url()
+    if (!url.includes('imapi.douyin.com') || !/send|create/i.test(url)) return
+    const post = request.postData() || ''
+    hits.push({
+      url: url.slice(0, 300),
+      ct: request.headers()['content-type'] || '',
+      method: request.method(),
+      bodyB64: post ? Buffer.from(post, 'latin1').toString('base64') : '',
+    })
+  }
+  session.page.on('request', handler)
+  const seconds = Math.min(300, Number(req.body?.seconds || 120))
+  try {
+    await sleep(seconds * 1000)
+  } finally {
+    session.page.off('request', handler)
+  }
+  return { captured: hits.slice(0, 5), waited: seconds }
 }))
 
 // 直接探测 imapi（Node 侧带 Cookie，不受 CORS 限制）
@@ -577,6 +865,183 @@ app.post('/probe', handle(async (req) => {
         return { count: urls.length, paths: [...paths].slice(0, 60), ctx: ctx.slice(0, 4) }
       })
     }
+    var pageSend
+    if (req.body?.pageSend) {
+      pageSend = await page.evaluate(async ({ url, bodyB64 }) => {
+        const bin = atob(bodyB64 || '')
+        const bytes = new Uint8Array(bin.length)
+        for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+        try {
+          const res = await fetch(url, {
+            method: 'POST',
+            credentials: 'include',
+            mode: 'cors',
+            headers: { 'content-type': 'application/x-protobuf', accept: 'application/x-protobuf' },
+            body: bytes,
+          })
+          const buf = new Uint8Array(await res.arrayBuffer())
+          let s = ''
+          for (const b of buf) s += (b >= 32 && b < 127) ? String.fromCharCode(b) : ' '
+          return { status: res.status, size: buf.length, printable: s.slice(0, 200) }
+        } catch (e) {
+          return { error: String(e && e.message || e) }
+        }
+      }, { url: req.body.url, bodyB64: req.body.bodyB64 })
+    }
+    var certTry
+    if (req.body?.certTry) {
+      certTry = await page.evaluate(async ({ url, bodyB64 }) => {
+        const bin = atob(bodyB64 || '')
+        const sdk = window.securitySDK
+        const out = {}
+        for (const name of ['generateCertHeader', 'generateCertHeaderWithAutoKey']) {
+          try {
+            const r = await sdk[name](url, bin)
+            out[name] = { type: typeof r, keys: r && typeof r === 'object' ? Object.keys(r) : null, sample: JSON.stringify(r).slice(0, 120) }
+            if (name === 'generateCertHeaderWithAutoKey' && r && r.certHeader) out.certHeaderKeys = Object.keys(r.certHeader)
+          } catch (e) { out[name] = { error: String(e && e.message || e) } }
+        }
+        return out
+      }, { url: req.body.url, bodyB64: req.body.bodyB64 })
+    }
+    var secureTry
+    if (req.body?.secureTry) {
+      secureTry = await page.evaluate(async ({ url, bodyB64 }) => {
+        const bin = atob(bodyB64 || '')
+        const out = {}
+        try {
+          const sp = window.securitySDK && window.securitySDK.secureProxy
+          if (sp && typeof sp.getBdTicketGuardHeader === 'function') {
+            const r = await sp.getBdTicketGuardHeader(url, bin)
+            out.secure = r && r.bdTicketGuardHeaders ? r.bdTicketGuardHeaders : r
+          }
+          if (sp && typeof sp.ensureTrustedTimestamp === 'function') {
+            await sp.ensureTrustedTimestamp().catch(() => {})
+          }
+          if (sp && typeof sp.getBdTicketGuardHeader === 'function') {
+            const r2 = await sp.getBdTicketGuardHeader(url, bin)
+            out.secureAfter = r2 && r2.bdTicketGuardHeaders ? r2.bdTicketGuardHeaders : r2
+          }
+        } catch (e) { out.error = String(e && e.message || e) }
+        return out
+      }, { url: req.body.url, bodyB64: req.body.bodyB64 })
+    }
+    var guardTry
+    if (req.body?.guardTry) {
+      guardTry = await page.evaluate(async ({ url, bodyB64 }) => {
+        const sdk = window.securitySDK
+        if (!sdk || typeof sdk.getBdTicketGuardHeader !== 'function') return { error: 'no api' }
+        const bin = atob(bodyB64 || '')
+        const out = []
+        const attempt = async (label, fn) => {
+          try { out.push({ label, ok: true, value: await fn() }) }
+          catch (e) { out.push({ label, ok: false, error: String(e && e.message || e) }) }
+        }
+        await attempt('url,bin', () => sdk.getBdTicketGuardHeader(url, bin))
+        await attempt('url,obj', () => sdk.getBdTicketGuardHeader(url, { data: bin }))
+        await attempt('obj', () => sdk.getBdTicketGuardHeader({ url, data: bin, body: bin }))
+        await attempt('urlonly', () => sdk.getBdTicketGuardHeader(url))
+        return { out: out.map((o) => ({ label: o.label, ok: o.ok, keys: o.value && typeof o.value === 'object' ? Object.keys(o.value) : typeof o.value, sample: JSON.stringify(o.value).slice(0, 160), error: o.error })) }
+      }, { url: req.body.url, bodyB64: req.body.bodyB64 })
+    }
+    var guardApi
+    if (req.body?.guardApi) {
+      guardApi = await page.evaluate(() => {
+        const names = (obj) => {
+          const out = new Set()
+          let o = obj
+          let depth = 0
+          while (o && depth < 3) {
+            for (const k of Object.getOwnPropertyNames(o)) out.add(k)
+            o = Object.getPrototypeOf(o); depth++
+          }
+          return [...out].slice(0, 60)
+        }
+        const sdk = window.securitySDK
+        if (!sdk) return { error: 'no securitySDK' }
+        return {
+          sdk: names(sdk),
+          crypto: sdk.cryptoSDK ? names(sdk.cryptoSDK) : null,
+          secure: sdk.secureProxy ? names(sdk.secureProxy) : null,
+          config: (() => { try { return Object.keys(sdk.config || {}).slice(0, 20) } catch (e) { return null } })(),
+        }
+      })
+    }
+    var guardInfo
+    if (req.body?.guard) {
+      guardInfo = await page.evaluate(() => {
+        const hits = []
+        for (const k of Object.keys(window)) {
+          if (!/ticket|guard|security|bd_/i.test(k)) continue
+          let t = typeof window[k]
+          let keys = []
+          try { if (t === 'object' && window[k]) keys = Object.keys(window[k]).slice(0, 12) } catch (e) { }
+          hits.push({ name: k, type: t, keys })
+        }
+        // 常见 SDK 位置
+        const cands = ['bdTicketGuard', '_bd_ticket_guard', 'BDTicketGuard', '__ticketGuard', 'webSecSDK', 'bdSecurity']
+        const found = {}
+        for (const c of cands) { try { if (window[c]) found[c] = Object.keys(window[c]).slice(0, 12) } catch (e) { } }
+        return { hits: hits.slice(0, 30), found, cookie: (document.cookie.match(/bd_ticket_guard_client_data=([^;]+)/) || [])[1] ? 'present' : 'missing' }
+      })
+    }
+    var wsInfo
+    if (req.body?.ws) {
+      wsInfo = await page.evaluate(async () => {
+        const urls = [...new Set(performance.getEntriesByType('resource').map((e) => e.name))]
+        const cand = urls.filter((u) => /573\.|im|chat/i.test(u) && /\.js(\?|$)/.test(u)).slice(0, 6)
+        const wss = new Set()
+        const cmds = []
+        for (const u of cand) {
+          let t = ''
+          try { t = await (await fetch(u)).text() } catch (e) { continue }
+          for (const m of t.matchAll(/wss?:\/\/[^"'`\s)]{6,90}/g)) wss.add(m[0])
+          const i = t.indexOf('SEND_MESSAGE')
+          if (i > 0) cmds.push(t.slice(Math.max(0, i - 200), i + 400))
+        }
+        return { files: cand, wss: [...wss].slice(0, 8), cmds: cmds.slice(0, 2) }
+      })
+    }
+    var scanInfo
+    if (req.body?.scan) {
+      scanInfo = await page.evaluate(async () => {
+        const urls = [...new Set(performance.getEntriesByType('resource').map((e) => e.name))].filter((u) => /\.(js|mjs)(\?|$)/.test(u))
+        const out = []
+        const paths = new Set()
+        for (const u of urls) {
+          let txt = ''
+          try {
+            const res = await fetch(u)
+            txt = await res.text()
+          } catch (e) { continue }
+          if (txt.length > 6e6) txt = txt.slice(0, 6e6)
+          for (const m of txt.matchAll(/\/v1\/message\/[a-z0-9_]{2,40}/gi)) paths.add(m[0])
+          const idx = txt.search(/send_message|SendMessage|client_msg_id|conversation_id/i)
+          if (idx > 0) out.push({ url: u.slice(-60), snippet: txt.slice(Math.max(0, idx - 140), idx + 220) })
+          if (out.length >= 6) break
+        }
+        return { scanned: urls.length, paths: [...paths], snippets: out }
+      })
+    }
+    var openInfo
+    if (req.body?.open) {
+      const before = await page.evaluate(() => document.body.innerText.length)
+      const box = await page.evaluate(() => {
+        const el = document.querySelector('.conversationConversationItemrowArea1') || document.querySelector('[data-e2e="conversation-item"]')
+        if (!el) return null
+        const r = el.getBoundingClientRect()
+        return { x: r.x + r.width * 0.4, y: r.y + 18 }
+      })
+      if (box) { await page.mouse.click(box.x, box.y); await sleep(1200); await page.mouse.click(box.x, box.y) }
+      await sleep(3500)
+      openInfo = await page.evaluate(() => {
+        const right = document.querySelector('[class*="chat"], [class*="Chat"], [class*="conversation"]')
+        const inputs = [...document.querySelectorAll('div[contenteditable="true"], textarea, [role="textbox"]')]
+          .map((el) => ({ tag: el.tagName, ce: el.getAttribute('contenteditable'), cls: String(el.className || '').slice(0, 50), vis: el.getBoundingClientRect().width > 0 }))
+        return { textLen: document.body.innerText.length, inputs, rightText: right ? right.textContent.slice(0, 120) : '' }
+      })
+      openInfo.image = (await page.screenshot({ type: 'jpeg', quality: 45, encoding: 'base64' })).slice(0, 200000)
+    }
     var snapInfo
     if (req.body?.snap) {
       snapInfo = await page.evaluate(() => ({ url: location.href, title: document.title, text: (document.body.innerText || '').slice(0, 700) }))
@@ -656,7 +1121,7 @@ app.post('/probe', handle(async (req) => {
   } finally {
     await page.close().catch(() => {})
   }
-  return { captured: captured.slice(0, 40), calls: calls.slice(0, 60), dom: req.body?.dom ? domItems : undefined, attrs: attrsDump, js: jsPaths, inputs: inputDump, imapi: imapiPaths, snap: snapInfo, bundles: bundleInfo }
+  return { captured: captured.slice(0, 40), calls: calls.slice(0, 60), dom: req.body?.dom ? domItems : undefined, attrs: attrsDump, js: jsPaths, inputs: inputDump, imapi: imapiPaths, snap: snapInfo, bundles: bundleInfo, open: openInfo, scan: scanInfo, ws: wsInfo, guard: guardInfo, guardApi, guardTry, secureTry, certTry, pageSend }
 }))
 app.post('/cookie/import', handle(async (req) => {
   if (!req.body?.cookie) throw new Error('cookie 必填')

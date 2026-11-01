@@ -55,6 +55,11 @@ services:
       - ./sign-service/profiles:/app/profiles
     expose:
       - "9100"
+    ports:
+      # 仅本机可访问：浏览器打开 http://localhost:6080/vnc.html 手动操作一次发送
+      - "127.0.0.1:6080:6080"
+      # macOS 自带「屏幕共享」可直接连：vnc://127.0.0.1:5900
+      - "127.0.0.1:5900:5900"
 
   app:
     build:
