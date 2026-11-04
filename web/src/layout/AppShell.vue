@@ -33,6 +33,10 @@
             <small>{{ channel === 'ready' ? '签名服务已连接' : '请检查 sign-service' }}</small>
           </div>
         </div>
+        <a class="repo-link" href="https://github.com/Crysq/douyinspark-alive" target="_blank" rel="noopener">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.55v-1.94c-3.2.7-3.88-1.54-3.88-1.54-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.77 2.7 1.26 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.12 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.7 5.4-5.26 5.69.41.36.78 1.06.78 2.14v3.17c0 .3.2.66.8.55A11.5 11.5 0 0 0 23.5 12A11.5 11.5 0 0 0 12 .5Z"/></svg>
+          <span>GitHub · 欢迎 PR</span>
+        </a>
         <div class="meta">
           <span>v2.0.0</span>
           <span class="dot" />
@@ -308,6 +312,15 @@ onBeforeUnmount(() => {
 .channel-text { display: flex; flex-direction: column; line-height: 1.3; }
 .channel-text strong { font-size: 12px; font-weight: 600; }
 .channel-text small { font-size: 10.5px; color: var(--muted-2); }
+.repo-link {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 10px; border-radius: 10px;
+  font-size: 11.5px; color: var(--muted);
+  border: 1px solid transparent;
+  transition: color var(--dur), background var(--dur), border-color var(--dur);
+}
+.repo-link svg { width: 15px; height: 15px; flex: none; }
+.repo-link:hover { color: var(--text); background: var(--surface); border-color: var(--line); }
 .meta { display: flex; align-items: center; gap: 8px; padding: 0 6px; font-size: 10.5px; color: var(--muted-2); }
 .meta .dot { width: 3px; height: 3px; border-radius: 50%; background: var(--muted-2); }
 

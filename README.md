@@ -107,3 +107,19 @@ scripts/       接口回归脚本、卡密安全测试
 
 本项目仅供个人学习与自用，用于维护自己账号的火花。请控制发送频率、遵守平台规则；
 使用产生的账号风险由使用者自行承担。
+
+---
+
+## 👤 作者与共建
+
+**Crysq** · [github.com/Crysq](https://github.com/Crysq)
+
+项目地址：**https://github.com/Crysq/douyinspark-alive**
+
+欢迎大家一起维护：发现问题、改进发送与防封策略、适配抖音接口变化，都欢迎提
+[Issue](https://github.com/Crysq/douyinspark-alive/issues) 或 PR。提 PR 前建议先开 Issue 说明改动方向，
+避免重复劳动。
+
+## 📄 License
+
+MIT
