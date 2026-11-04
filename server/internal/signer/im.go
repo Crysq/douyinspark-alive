@@ -2,15 +2,16 @@ package signer
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 )
 
 // 抖音 Web 端当前参数（旧的 19.5.0 已被网关以 "url doesn't match" 拒绝）
 const webQuery = "device_platform=webapp&aid=6383&channel=channel_pc_web&pc_client_type=1&version_code=170400&version_name=17.4.0&cookie_enabled=true&platform=PC&update_version_code=170400"
 
 const (
-	imSendEndpoint     = "https://www.douyin.com/aweme/v1/web/im/send/msg/?" + webQuery
 	imUserInfoEndpoint = "https://www.douyin.com/aweme/v1/web/im/user/info/?" + webQuery
 	emojiListEndpoint  = "https://www.douyin.com/aweme/v1/web/emoji/list?" + webQuery + "&need_all=true"
 )
@@ -27,42 +28,51 @@ type IMMessage struct {
 //   - to_user_id：对方数字 user_id（不是抖音号 handle）
 //   - msg_type=7：文本消息
 //   - content：JSON 字符串 {"text":"..."}
-func (c *Client) SendIM(accountID uint, cookie, toUserID, text string) error {
+// ErrDeliveryUncertain 已尝试发送但回执不可确认：此时不应重试，避免重复消息。
+var ErrDeliveryUncertain = errors.New("delivery_uncertain")
+
+// SendIM 在已登录的浏览器会话里，用真实键盘事件给好友发一条私信。
+//
+// 不再构造 protobuf 请求：抖音 PC IM 已迁到 imapi + protobuf + 设备级签名
+// （bd-ticket-guard-client-data），协议发送不可行。参考 DouYinSparkFlow 的做法，
+// 让页面自己完成签名与风控，我们只负责输入与回执确认。
+//
+// deliveryState:
+//   confirmed  → 返回 nil
+//   uncertain  → 返回 ErrDeliveryUncertain（不要重试）
+//   not_sent   → 返回可读错误（可以重试）
+func (c *Client) SendIM(accountID uint, cookie, toUserID, nickname, text string) error {
 	if c == nil {
 		return fmt.Errorf("签名服务未配置")
 	}
-	if toUserID == "" {
-		return fmt.Errorf("缺少对方抖音 user_id，无法发送")
+	if toUserID == "" && nickname == "" {
+		return fmt.Errorf("缺少好友标识（uid 或昵称）")
 	}
-	content, _ := json.Marshal(map[string]string{"text": text})
-	form := url.Values{}
-	form.Set("to_user_id", toUserID)
-	form.Set("msg_type", "7")
-	form.Set("content", string(content))
-	form.Set("scene", "chat")
-	form.Set("client_key", "")
-	form.Set("verify_type", "")
+	if strings.TrimSpace(text) == "" {
+		return fmt.Errorf("消息内容为空")
+	}
 
-	res, err := c.Fetch(accountID, cookie, imSendEndpoint, "POST", form.Encode(), map[string]string{
-		"content-type": "application/x-www-form-urlencoded",
-	})
-	if err != nil {
+	var out struct {
+		OK            bool   `json:"ok"`
+		DeliveryState string `json:"deliveryState"`
+		Reason        string `json:"reason"`
+	}
+	if err := c.post("/im/send", map[string]any{
+		"accountId": accountID, "nickname": nickname, "text": text,
+	}, &out); err != nil {
 		return err
 	}
-	if res.Status == 404 {
-		return fmt.Errorf("抖音已把私信迁到 imapi.douyin.com 的 protobuf 协议，旧表单接口已下线（HTTP 404）")
+	switch out.DeliveryState {
+	case "confirmed":
+		return nil
+	case "uncertain":
+		return fmt.Errorf("%w: %s", ErrDeliveryUncertain, out.Reason)
+	default:
+		if out.Reason == "" {
+			out.Reason = "发送未确认"
+		}
+		return fmt.Errorf("%s", out.Reason)
 	}
-	if res.Status != 200 {
-		return fmt.Errorf("私信接口返回 %d: %s", res.Status, truncate(res.Body, 160))
-	}
-	var out IMMessage
-	if err := json.Unmarshal([]byte(res.Body), &out); err != nil {
-		return fmt.Errorf("响应无法解析: %s", truncate(res.Body, 160))
-	}
-	if out.StatusCode != 0 {
-		return fmt.Errorf("发送失败(%d): %s", out.StatusCode, out.StatusMsg)
-	}
-	return nil
 }
 
 // FriendProfile 会话好友资料（由 sec_uid 批量换取）。

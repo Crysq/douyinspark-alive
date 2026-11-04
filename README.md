@@ -122,10 +122,10 @@
 | 会话好友同步 | ✅ 从聊天页截获 `sec_user_ids` + `im/user/info` 批量换资料（实测 14 位） |
 | 聊天框表情 | ✅ `emoji/list` 返回 371 个，已接入模板编辑器的表情选择器 |
 | 扫码登录 / Cookie | ✅ 正常 |
-| 发消息 | ❌ 旧 `/im/send/msg/` 已 404，抖音迁到 `imapi.douyin.com` + protobuf |
+| 发消息 | ✅ 页面自动化发送：真实键盘事件 + 回执确认（confirmed/uncertain/not_sent），不再走 protobuf |
 
-细节与两条替代路线（protobuf 复刻 / 页面自动化）见 [docs/DOUYIN-API.md](docs/DOUYIN-API.md)。
-发送失败会如实写入记录，不会伪造成功。
+实现细节见 [docs/DOUYIN-API.md](docs/DOUYIN-API.md)。发送回执为 confirmed 才计为成功；
+回执不确定（uncertain）**不重试**，避免重复消息。
 
 ## 🧠 火花规则
 

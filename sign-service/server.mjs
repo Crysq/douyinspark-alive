@@ -246,6 +246,99 @@ async function siteFetch({ accountId, cookie, url, method = 'POST', body = '', h
   }, { url: target.toString(), method: method.toUpperCase(), body, headers })
 }
 
+/**
+ * 页面内发送：真实键盘事件 + 回执确认。
+ * 参考 DouYinSparkFlow 的做法——不构造任何请求，让页面自己完成签名与设备指纹。
+ *
+ * deliveryState:
+ *   confirmed  消息出现在会话里（已送达）
+ *   uncertain  已尝试但未看到回执（调用方不要重试，避免重复消息）
+ *   not_sent   明确未发出（可重试）
+ */
+async function sendChatMessage({ accountId, nickname, text, debug: req_debug }) {
+  const session = await ensureSession(accountId)
+  const page = await session.browser.newPage()
+  const result = { ok: false, deliveryState: 'not_sent', via: 'page', reason: '' }
+  log('发送开始', JSON.stringify({ accountId, nickname, text: String(text).slice(0, 60) }))
+  const finish = (state, reason) => { result.deliveryState = state; result.ok = state === 'confirmed'; result.reason = reason; return result }
+  try {
+    await page.goto('https://www.douyin.com/chat', { waitUntil: 'domcontentloaded', timeout: 45000 })
+    await page.waitForSelector('[data-e2e="conversation-item"]', { timeout: 30000 })
+    await sleep(2000)
+
+    // 1) 按昵称在会话列表里定位，并用真实鼠标点击打开会话
+    const pos = await page.evaluate((name) => {
+      const items = [...document.querySelectorAll('[data-e2e="conversation-item"]')]
+      const el = items.find((it) => name && (it.textContent || '').includes(name))
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { x: r.x + r.width * 0.4, y: r.y + r.height / 2 }
+    }, nickname)
+    if (!pos) return finish('not_sent', `会话列表里找不到「${nickname}」，请先同步会话`)
+    await page.mouse.click(pos.x, pos.y)
+    await sleep(2500)
+
+    // 2) 等输入框出现（Draft.js 的 contenteditable）
+    const editorPos = await page.evaluate(() => {
+      const el = document.querySelector('div[contenteditable="true"], textarea')
+      if (!el) return null
+      const r = el.getBoundingClientRect()
+      return { x: r.x + r.width / 2, y: r.y + r.height / 2 }
+    })
+    if (!editorPos) return finish('not_sent', '聊天面板没有打开，输入框未出现')
+    await page.mouse.click(editorPos.x, editorPos.y)
+    await sleep(300)
+
+    // 3) 真实键盘输入；多行用 Shift+Enter 换行，最后再按 Enter 发送
+    const lines = String(text).split(/\r?\n/)
+    for (let i = 0; i < lines.length; i++) {
+      if (lines[i]) await page.keyboard.type(lines[i], { delay: 18 })
+      if (i < lines.length - 1) {
+        await page.keyboard.down('Shift')
+        await page.keyboard.press('Enter')
+        await page.keyboard.up('Shift')
+        await sleep(200)
+      }
+    }
+    await sleep(400)
+
+    // 4) 优先点「发送」按钮，没有就回车
+    const sentByButton = await page.evaluate(() => {
+      const btn = [...document.querySelectorAll('button, [role="button"]')]
+        .find((e) => /发送/.test((e.textContent || '').trim()))
+      if (!btn) return false
+      const r = btn.getBoundingClientRect()
+      if (r.width < 4) return false
+      btn.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+      return true
+    })
+    if (!sentByButton) await page.keyboard.press('Enter')
+    await sleep(2500)
+
+    // 5) 回执：去掉空白后，在最近 2000 字里找我们刚发的文本
+    const seen = await page.evaluate((t) => {
+      const norm = (v) => (v || '').replace(/\s+/g, '')
+      const panel = norm(document.body.innerText).slice(-2000)
+      return panel.includes(norm(t))
+    }, text.slice(0, 30))
+    if (req_debug) {
+      result.debug = await page.evaluate(() => ({
+        url: location.href,
+        editor: (() => { const e = document.querySelector('div[contenteditable="true"], textarea'); return e ? (e.textContent || e.value || '').slice(0, 60) : null })(),
+        text: (document.body.innerText || '').slice(-400),
+      }))
+      result.image = (await page.screenshot({ type: 'jpeg', quality: 45, encoding: 'base64' })).slice(0, 200000)
+    }
+    if (seen) { log('发送确认', nickname); return finish('confirmed', '') }
+    log('回执未确认', nickname, 'tail=', await page.evaluate(() => (document.body.innerText || '').slice(-120)))
+    return finish('uncertain', '已尝试发送，但未在会话里看到回执')
+  } catch (error) {
+    return finish('not_sent', String(error && error.message || error))
+  } finally {
+    await page.close().catch(() => {})
+  }
+}
+
 const app = express()
 app.disable('x-powered-by')
 app.use(express.json({ limit: '2mb' }))
@@ -271,6 +364,11 @@ app.post('/fetch', handle(async (req) => {
   if (!req.body?.url) return { status: 400, body: '', error: 'url 必填' }
   return siteFetch(req.body)
 }))
+app.post('/im/send', handle(async (req) => {
+  if (!req.body?.text) throw new Error('text 必填')
+  return sendChatMessage({ accountId: idOf(req), nickname: req.body.nickname, text: String(req.body.text).slice(0, 800), debug: req.body.debug })
+}))
+
 app.post('/account/profile', handle(async (req) => accountProfile(idOf(req))))
 
 // 记录聊天页建立的 WebSocket（地址 + 前几帧）

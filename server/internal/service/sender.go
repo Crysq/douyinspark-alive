@@ -82,7 +82,7 @@ func (s *Sender) SendForFriend(ctx context.Context, accountID, friendID, templat
 	content := RenderTemplate(tpl.Content, friend.Name, streak, now)
 
 	start := time.Now()
-	sendErr := s.sign.SendIM(account.ID, account.Cookie, friend.DouyinUserID, content)
+	sendErr := s.sign.SendIM(account.ID, account.Cookie, friend.DouyinUserID, friend.Name, content)
 	latency := int(time.Since(start).Milliseconds())
 
 	record := model.Record{

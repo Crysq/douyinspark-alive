@@ -2,6 +2,7 @@ package service
 
 import (
 	"bytes"
+	"errors"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 
 	"doyinspark/internal/cache"
 	"doyinspark/internal/model"
+	"doyinspark/internal/signer"
 )
 
 // Scheduler 周期扫描任务，为「今天还没互动」的好友补发消息。
@@ -142,6 +144,9 @@ func (s *Scheduler) runTask(ctx context.Context, task *model.Task, retries int, 
 			if err == nil && result != nil && result.Success {
 				sent++
 				break
+			}
+			if errors.Is(err, signer.ErrDeliveryUncertain) {
+				break // 已尝试发送但回执不确定，绝不重试，避免重复消息
 			}
 			if attempt < retries {
 				time.Sleep(time.Duration(800*(attempt+1)) * time.Millisecond)

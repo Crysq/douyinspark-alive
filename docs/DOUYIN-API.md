@@ -99,6 +99,32 @@ content-type: application/x-protobuf
 未打通：`bd-ticket-guard-client-data` —— 页面 SDK 的 fetch 拦截器在请求发出前注入，
 直接调用 SDK 的公开方法拿不到；从页面内 `fetch` 直连 imapi 会被 CORS 拦（`Failed to fetch`）。
 
+## 发送最终实现（页面自动化，已跑通）
+
+放弃协议级发送后，采用与 DouYinSparkFlow 相同的思路：**不构造请求，让页面自己完成签名与设备指纹**。
+
+签名服务 `POST /im/send {accountId, nickname, text}` 的流程：
+
+1. 打开 `douyin.com/chat`，等待会话列表就绪
+2. 按昵称定位会话，用真实鼠标点击打开聊天面板
+3. 聚焦 Draft.js 的 `contenteditable`，**真实键盘事件**逐行输入（Shift+Enter 换行）
+4. 优先点「发送」按钮，否则回车
+5. 回执：在最近 2000 字（去空白）中检索刚发送的文本
+
+返回三态：
+
+| deliveryState | 含义 | 调用方行为 |
+| --- | --- | --- |
+| `confirmed` | 会话里能看到刚发的消息 | 计为成功，推进火花天数 |
+| `uncertain` | 已尝试但没看到回执 | **不重试**，避免重复消息 |
+| `not_sent` | 明确未发出 | 可读错误，可重试 |
+
+`signer.SendIM(accountID, cookie, uid, nickname, text)` 现在走这条路径；
+Go 调度器对 `ErrDeliveryUncertain` 直接终止本轮重试。
+
+实测：账号「王壹」手动续火 16s 送达（截图有蓝色气泡），调度器自动发送 10s 送达，
+78 项接口回归全过。
+
 ## 发送的现状与两条路线
 
 **现状**：发送请求走 `imapi.douyin.com/v1/message/*`，`content-type: application/x-protobuf`，
