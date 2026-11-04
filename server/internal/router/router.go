@@ -79,6 +79,7 @@ func New(h *handler.Handler, cfg *config.Config, rdb *cache.Cache) *gin.Engine {
 			auth.PATCH("/friends/:id", h.UpdateFriend)
 			auth.DELETE("/friends/:id", h.DeleteFriend)
 			auth.POST("/friends/:id/keep", middleware.RateLimit(rdb, "keep", 30, time.Minute), h.KeepFriend)
+			auth.POST("/friends/batch-auto", h.BatchAuto)
 			auth.POST("/friends/batch-keep", middleware.RateLimit(rdb, "keep-batch", 12, time.Minute), h.BatchKeep)
 
 			auth.GET("/tasks", h.Tasks)

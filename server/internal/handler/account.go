@@ -288,11 +288,14 @@ func (h *Handler) SyncFriends(c *gin.Context) {
 		var friend model.Friend
 		err := h.DB.Where("account_id = ? AND (friend_user_id = ? OR sec_uid = ?)", account.ID, key, profile.SecUID).First(&friend).Error
 		if err != nil {
-			h.DB.Create(&model.Friend{
+			// 默认不自动开启：由用户在好友页按需开启，避免一登录就全量自动发送
+			created1 := model.Friend{
 				UserID: uid(c), AccountID: account.ID, Name: profile.Nickname,
 				DouyinUserID: profile.UID, SecUID: profile.SecUID,
-				UniqueID: profile.UniqueID, AvatarURL: profile.AvatarURL, AutoKeep: true,
-			})
+				UniqueID: profile.UniqueID, AvatarURL: profile.AvatarURL, AutoKeep: false,
+			}
+			h.DB.Create(&created1)
+			h.DB.Model(&created1).Update("auto_keep", false)
 			created++
 			continue
 		}

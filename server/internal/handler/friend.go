@@ -110,7 +110,8 @@ func (h *Handler) CreateFriend(c *gin.Context) {
 		util.Fail(c, 403, err.Error())
 		return
 	}
-	autoKeep := true
+	// 默认不开启自动续火，需用户显式勾选
+	autoKeep := false
 	if req.AutoKeep != nil {
 		autoKeep = *req.AutoKeep
 	}
@@ -195,6 +196,27 @@ func (h *Handler) KeepFriend(c *gin.Context) {
 	}
 	h.audit(c, "friend.keep", friend.Name, result.Record.Content)
 	util.OK(c, result)
+}
+
+// BatchAuto 批量开启/关闭自动续火。
+func (h *Handler) BatchAuto(c *gin.Context) {
+	var req struct {
+		IDs      []uint `json:"ids" binding:"required"`
+		AutoKeep bool   `json:"autoKeep"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil || len(req.IDs) == 0 {
+		util.Fail(c, 400, "请选择好友")
+		return
+	}
+	res := h.DB.Model(&model.Friend{}).
+		Where("user_id = ? AND id IN ?", uid(c), req.IDs).
+		Update("auto_keep", req.AutoKeep)
+	word := "开启"
+	if !req.AutoKeep {
+		word = "关闭"
+	}
+	h.audit(c, "friend.batch.auto", fmt.Sprintf("%d 位好友", res.RowsAffected), word+"自动续火")
+	util.OKMsg(c, fmt.Sprintf("已%s %d 位好友的自动续火", word, res.RowsAffected), gin.H{"updated": res.RowsAffected})
 }
 
 // BatchKeep 批量续火。

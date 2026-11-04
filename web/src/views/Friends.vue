@@ -48,6 +48,8 @@
         <span>已选 <b>{{ selected.size }}</b> 位好友</span>
         <div class="row gap-10">
           <button class="btn btn-sm" @click="selected.clear()">取消</button>
+          <button class="btn btn-sm" :disabled="batching" @click="batchAuto(true)">开启自动</button>
+          <button class="btn btn-sm" :disabled="batching" @click="batchAuto(false)">关闭自动</button>
           <button class="btn btn-sm btn-primary" :disabled="batching" @click="batchKeep">
             {{ batching ? '发送中…' : '批量续火' }}
           </button>
@@ -150,6 +152,13 @@
         <label>备注</label>
         <input v-model.trim="form.remark" class="input" placeholder="例如：大学同学" />
       </div>
+      <div class="row-between auto-row">
+        <div>
+          <strong>添加后开启自动续火</strong>
+          <p>默认关闭，需要时再打开</p>
+        </div>
+        <Toggle v-model="form.autoKeep" />
+      </div>
       <template #footer>
         <button class="btn" @click="createOpen = false">取消</button>
         <button class="btn btn-primary" :disabled="saving" @click="submitCreate">{{ saving ? '保存中…' : '添加' }}</button>
@@ -198,7 +207,7 @@ const levelTabs = [
   { value: 'broken', label: '已断火' },
 ]
 
-const form = reactive({ accountId: 0, name: '', userId: '', uniqueId: '', streakDays: 0, remark: '' })
+const form = reactive({ accountId: 0, name: '', userId: '', uniqueId: '', streakDays: 0, remark: '', autoKeep: false })
 
 async function load() {
   loading.value = true
@@ -248,6 +257,20 @@ async function keep(friend: Friend) {
   }
 }
 
+async function batchAuto(autoKeep: boolean) {
+  batching.value = true
+  try {
+    const result = await friendApi.batchAuto([...selected], autoKeep)
+    ui.toast('success', `已${autoKeep ? '开启' : '关闭'} ${result.updated} 位好友的自动续火`)
+    selected.clear()
+    await load()
+  } catch (error) {
+    ui.toast('error', (error as Error).message)
+  } finally {
+    batching.value = false
+  }
+}
+
 async function batchKeep() {
   batching.value = true
   try {
@@ -289,7 +312,7 @@ async function submitCreate() {
     await friendApi.create({ ...form })
     ui.toast('success', '好友已添加')
     createOpen.value = false
-    form.name = ''; form.userId = ''; form.uniqueId = ''; form.streakDays = 0; form.remark = ''
+    form.name = ''; form.userId = ''; form.uniqueId = ''; form.streakDays = 0; form.remark = ''; form.autoKeep = false
     await load()
   } catch (error) {
     ui.toast('error', (error as Error).message)
@@ -397,6 +420,9 @@ onMounted(async () => {
 
 .f-foot { display: flex; align-items: center; justify-content: space-between; padding-top: 12px; border-top: 1px solid var(--line); }
 .auto { display: flex; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted); }
+.auto-row { padding: 10px 12px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); }
+.auto-row strong { font-size: 12.5px; font-weight: 600; }
+.auto-row p { margin-top: 2px; font-size: 11px; color: var(--muted-2); }
 
 .pager { display: flex; align-items: center; justify-content: center; gap: 14px; font-size: 12px; color: var(--muted); }
 

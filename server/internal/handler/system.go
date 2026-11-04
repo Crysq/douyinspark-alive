@@ -84,12 +84,12 @@ func (h *Handler) SeedDemo(c *gin.Context) {
 			UserID: userID, AccountID: account.ID, Name: name,
 			DouyinUserID: "1000" + string(rune('0'+i)),
 			UniqueID:     "dy_" + name, StreakDays: streaks[i], MaxStreakDays: streaks[i] + 12,
-			LastInteractAt: &last, AutoKeep: i != 2,
+			LastInteractAt: &last, AutoKeep: i == 0,
 		})
 	}
 	h.DB.Create(&friends)
-	if len(friends) > 2 {
-		h.DB.Model(&model.Friend{}).Where("id = ?", friends[2].ID).Update("auto_keep", false)
+	for i := 1; i < len(friends); i++ {
+		h.DB.Model(&model.Friend{}).Where("id = ?", friends[i].ID).Update("auto_keep", false)
 	}
 
 	var templates []model.Template

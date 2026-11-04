@@ -71,6 +71,7 @@ export const friendApi = {
   update: (id: number, payload: Record<string, unknown>) => patch<null>(`/friends/${id}`, payload),
   remove: (id: number) => del<null>(`/friends/${id}`),
   keep: (id: number) => post<SendResult>(`/friends/${id}/keep`),
+  batchAuto: (ids: number[], autoKeep: boolean) => post<{ updated: number }>('/friends/batch-auto', { ids, autoKeep }),
   batchKeep: (ids: number[]) => post<{ success: number; failed: number; messages: string[] }>('/friends/batch-keep', { ids }),
 }
 
