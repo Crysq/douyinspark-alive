@@ -54,7 +54,7 @@ async function ensureSession(value) {
       userDataDir: profileDir,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
         '--disable-gpu', '--disable-blink-features=AutomationControlled', '--lang=zh-CN',
-        '--remote-debugging-port=9222', '--remote-debugging-address=0.0.0.0'],
+        ],
       defaultViewport: { width: 1400, height: 900 },
     })
     session.browser = browser

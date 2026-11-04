@@ -30,6 +30,11 @@ const router = createRouter({
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore()
+  await auth.loadMode()
+  // 原登录逻辑下不开放注册与会员入口
+  if (auth.mode === 'simple' && (to.name === 'register' || to.name === 'membership' || to.meta.admin)) {
+    return { name: 'dashboard' }
+  }
   const hasToken = Boolean(localStorage.getItem('doyinspark.token'))
   if (!to.meta.public && !hasToken && !auth.pending) return { name: 'login', query: { redirect: to.fullPath } }
   if (to.meta.public && hasToken) return { name: 'dashboard' }

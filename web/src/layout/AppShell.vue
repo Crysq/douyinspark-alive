@@ -48,7 +48,7 @@
           <p class="top-desc hide-sm">{{ route.meta.desc }}</p>
         </div>
         <div class="top-actions">
-          <router-link to="/membership" class="member-chip" :class="memberTone">
+          <router-link v-if="auth.isSaas" to="/membership" class="member-chip" :class="memberTone">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="m3 8 4 3 5-6 5 6 4-3-2 10H5L3 8Z"/></svg>
             <span>{{ memberText }}</span>
           </router-link>
@@ -98,8 +98,8 @@
             </button>
             <Transition name="drop">
               <div v-if="menuOpen" class="user-menu card">
-                <router-link to="/membership" class="menu-item" @click="menuOpen = false">会员中心</router-link>
-                <router-link v-if="auth.isAdmin" to="/admin/cards" class="menu-item" @click="menuOpen = false">卡密管理</router-link>
+                <router-link v-if="auth.isSaas" to="/membership" class="menu-item" @click="menuOpen = false">会员中心</router-link>
+                <router-link v-if="auth.isAdmin && auth.isSaas" to="/admin/cards" class="menu-item" @click="menuOpen = false">卡密管理</router-link>
                 <router-link to="/settings" class="menu-item" @click="menuOpen = false">系统设置</router-link>
                 <button class="menu-item danger" @click="logout">退出登录</button>
               </div>
@@ -174,10 +174,13 @@ const baseNav = [
 ]
 
 const navItems = computed(() => {
-  const items = [...baseNav, { to: '/membership', label: '会员中心', icon: icons.crown }]
-  if (auth.isAdmin) {
-    items.push({ to: '/admin/users', label: '用户管理', icon: icons.users })
-    items.push({ to: '/admin/cards', label: '卡密管理', icon: icons.cards })
+  const items = [...baseNav]
+  if (auth.isSaas) {
+    items.push({ to: '/membership', label: '会员中心', icon: icons.crown })
+    if (auth.isAdmin) {
+      items.push({ to: '/admin/users', label: '用户管理', icon: icons.users })
+      items.push({ to: '/admin/cards', label: '卡密管理', icon: icons.cards })
+    }
   }
   items.push({ to: '/settings', label: '系统设置', icon: icons.settings })
   return items
@@ -235,6 +238,7 @@ onMounted(async () => {
   ui.applyTheme()
   tickClock()
   timer = window.setInterval(tickClock, 15000)
+  await auth.loadMode()
   await auth.loadMe()
   await refresh()
   window.setInterval(refresh, 45000)

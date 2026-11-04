@@ -82,10 +82,14 @@ func (h *Handler) currentUser(c *gin.Context) (*model.User, bool) {
 }
 
 // entitlement 读取当前用户的套餐权限与用量。
+// AUTH_MODE=simple 时退化为原登录逻辑：不做会员/配额限制。
 func (h *Handler) entitlement(c *gin.Context) (*service.Entitlement, error) {
 	user, ok := h.currentUser(c)
 	if !ok {
 		return nil, fmt.Errorf("用户不存在")
+	}
+	if h.Cfg.AuthMode != "saas" {
+		return &service.Entitlement{Plan: "forever", Valid: true, DaysLeft: -1, Quota: service.QuotaOf("forever")}, nil
 	}
 	return service.EntitlementOf(h.DB, user, time.Now().In(h.Cfg.Location)), nil
 }

@@ -35,6 +35,7 @@ func New(h *handler.Handler, cfg *config.Config, rdb *cache.Cache) *gin.Engine {
 	api := r.Group("/api")
 	{
 		// 公开接口
+		api.GET("/auth/mode", h.AuthMode)
 		api.POST("/auth/login", middleware.RateLimit(rdb, "login", 12, 5*time.Minute), h.Login)
 		api.POST("/auth/register", middleware.RateLimit(rdb, "register", 10, 10*time.Minute), h.Register)
 		api.GET("/membership/plans", h.Plans)

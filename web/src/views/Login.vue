@@ -21,7 +21,8 @@
         <ul class="points">
           <li><span class="tick">✓</span> 真实登录态，扫码或 Cookie 导入</li>
           <li><span class="tick">✓</span> 时间窗口 + 轮询间隔，像人一样发送</li>
-          <li><span class="tick">✓</span> 日卡 / 周卡 / 月卡 / 季卡 / 年卡 / 永久卡</li>
+          <li v-if="auth.isSaas"><span class="tick">✓</span> 日卡 / 周卡 / 月卡 / 季卡 / 年卡 / 永久卡</li>
+          <li v-else><span class="tick">✓</span> 单管理员登录，开箱即用</li>
         </ul>
       </div>
 
@@ -63,7 +64,7 @@
             </button>
           </form>
 
-          <router-link to="/register" class="register-link">
+          <router-link v-if="auth.isSaas" to="/register" class="register-link">
             还没有账号？<b>用卡密开通 →</b>
           </router-link>
 
@@ -105,7 +106,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useAuthStore } from '@/stores/auth'
 import { useUiStore } from '@/stores/ui'
@@ -123,6 +124,8 @@ const error = ref('')
 const redeeming = ref(false)
 const year = new Date().getFullYear()
 
+onMounted(() => { auth.loadMode() })
+
 function go() {
   router.push((route.query.redirect as string) || '/dashboard')
 }
@@ -135,7 +138,7 @@ async function submit() {
   }
   try {
     const result = await auth.login(username.value, password.value)
-    if (result.needActivation) {
+    if (auth.isSaas && result.needActivation) {
       ui.toast('info', '会员未激活，请兑换卡密')
       return
     }

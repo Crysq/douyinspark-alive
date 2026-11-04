@@ -21,6 +21,7 @@ type Config struct {
 	RedisPassword  string
 	RedisDB        int
 	SignURL        string
+	AuthMode       string
 	TrustedProxies []string
 	TickInterval   time.Duration
 	Location       *time.Location
@@ -45,6 +46,7 @@ func Load() (*Config, error) {
 		RedisPassword: env("REDIS_PASSWORD", ""),
 		RedisDB:       envInt("REDIS_DB", 0),
 		SignURL:       strings.TrimRight(env("SIGN_SERVICE_URL", ""), "/"),
+		AuthMode:      env("AUTH_MODE", "simple"),
 		TickInterval:  time.Duration(envInt("TICK_SECONDS", 20)) * time.Second,
 		Location:      loc,
 		Env:           env("APP_ENV", "production"),

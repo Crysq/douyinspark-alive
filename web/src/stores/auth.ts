@@ -11,8 +11,12 @@ export const useAuthStore = defineStore('auth', () => {
   const loading = ref(false)
   // 待激活：会员过期/未开通时只能兑换卡密
   const pending = ref<{ user: User; activationToken: string } | null>(null)
+  // simple = 原登录逻辑（仅管理员）；saas = 卡密会员制
+  const mode = ref<'simple' | 'saas'>('simple')
+  const modeLoaded = ref(false)
 
   const authed = computed(() => Boolean(token.value && user.value))
+  const isSaas = computed(() => mode.value === 'saas')
   const isAdmin = computed(() => user.value?.role === 'admin')
   const isMember = computed(() => Boolean(user.value?.isMember))
   const daysLeft = computed(() => user.value?.daysLeft ?? 0)
@@ -28,7 +32,7 @@ export const useAuthStore = defineStore('auth', () => {
     loading.value = true
     try {
       const data = await authApi.login(username, password)
-      if (data.needActivation || !data.user.isMember) {
+      if (mode.value === 'saas' && (data.needActivation || !data.user.isMember)) {
         pending.value = { user: data.user, activationToken: data.activationToken || data.token }
         return { needActivation: true as const }
       }
@@ -85,5 +89,15 @@ export const useAuthStore = defineStore('auth', () => {
     localStorage.removeItem(TOKEN_KEY)
   }
 
-  return { token, user, loading, pending, authed, isAdmin, isMember, daysLeft, login, register, redeem, loadMe, refresh, logout, clear }
+  async function loadMode() {
+    if (modeLoaded.value) return mode.value
+    try {
+      const data = await authApi.mode()
+      mode.value = data.mode === 'saas' ? 'saas' : 'simple'
+    } catch { /* 保持默认 simple */ }
+    modeLoaded.value = true
+    return mode.value
+  }
+
+  return { token, user, loading, pending, mode, modeLoaded, authed, isSaas, isAdmin, isMember, daysLeft, login, register, redeem, loadMe, refresh, logout, clear, loadMode }
 })

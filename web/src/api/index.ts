@@ -9,6 +9,7 @@ export const authApi = {
   login: (username: string, password: string) => post<AuthPayload>('/auth/login', { username, password }),
   register: (payload: { username: string; password: string; nickname?: string; cardCode: string }) =>
     post<AuthPayload>('/auth/register', payload),
+  mode: () => get<{ mode: 'simple' | 'saas' }>('/auth/mode'),
   me: () => get<User>('/auth/me'),
   logout: () => post<null>('/auth/logout'),
   password: (oldPassword: string, newPassword: string) => put<null>('/auth/password', { oldPassword, newPassword }),

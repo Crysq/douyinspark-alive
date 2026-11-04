@@ -31,6 +31,10 @@ func (h *Handler) Plans(c *gin.Context) {
 
 // Membership 当前会员信息 + 兑换流水。
 func (h *Handler) Membership(c *gin.Context) {
+	if h.Cfg.AuthMode != "saas" {
+		util.Fail(c, 404, "当前未开放会员中心")
+		return
+	}
 	user, ok := h.currentUser(c)
 	if !ok {
 		return
@@ -51,6 +55,10 @@ func (h *Handler) Membership(c *gin.Context) {
 
 // Redeem 兑换卡密：待激活令牌与完整令牌都可以调用。
 func (h *Handler) Redeem(c *gin.Context) {
+	if h.Cfg.AuthMode != "saas" {
+		util.Fail(c, 404, "当前未开放卡密兑换")
+		return
+	}
 	var req struct {
 		Code string `json:"code" binding:"required"`
 	}

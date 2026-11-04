@@ -52,6 +52,17 @@ func (h *Handler) Login(c *gin.Context) {
 	now := time.Now().In(h.Cfg.Location)
 	h.DB.Model(&user).Update("last_login_at", now)
 
+	if h.Cfg.AuthMode == "simple" {
+		token, expires, err := h.issue(c, &user, util.ScopeFull, h.Cfg.TokenTTL)
+		if err != nil {
+			util.Fail(c, 500, "令牌签发失败")
+			return
+		}
+		h.audit(c, "auth.login", user.Username, "登录控制台")
+		util.OK(c, authPayload{Token: token, ExpiresAt: expires, User: h.View(&user)})
+		return
+	}
+
 	if !service.IsMember(user.MemberExpireAt, now) {
 		token, expires, err := util.SignToken(h.Cfg.JWTSecret, user.ID, user.Role, util.ScopeActivate, 2*time.Hour)
 		if err != nil {
@@ -73,8 +84,17 @@ func (h *Handler) Login(c *gin.Context) {
 	util.OK(c, authPayload{Token: token, ExpiresAt: expires, User: h.View(&user)})
 }
 
+// AuthMode 返回当前登录模式，前端据此决定是否显示注册/会员入口。
+func (h *Handler) AuthMode(c *gin.Context) {
+	util.OK(c, gin.H{"mode": h.Cfg.AuthMode})
+}
+
 // Register 注册：必须携带未使用的卡密，兑换成功后才能登录。
 func (h *Handler) Register(c *gin.Context) {
+	if h.Cfg.AuthMode != "saas" {
+		util.Fail(c, 404, "当前未开放注册")
+		return
+	}
 	var req struct {
 		Username string `json:"username" binding:"required"`
 		Password string `json:"password" binding:"required,min=6"`

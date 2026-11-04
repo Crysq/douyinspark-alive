@@ -154,9 +154,13 @@ func (h *Handler) LoginStatus(c *gin.Context) {
 		return
 	}
 	if status.Logged {
-		h.markOnline(account)
+		if err := h.syncProfile(account); err == nil {
+			h.DB.Model(account).Update("status", "online")
+			util.OK(c, gin.H{"logged": true, "cookieCount": status.CookieCount})
+			return
+		}
 	}
-	util.OK(c, gin.H{"logged": status.Logged, "cookieCount": status.CookieCount})
+	util.OK(c, gin.H{"logged": false, "cookieCount": status.CookieCount})
 }
 
 // ImportCookie 导入完整 Cookie 登录。
@@ -182,9 +186,15 @@ func (h *Handler) ImportCookie(c *gin.Context) {
 		util.Fail(c, 400, "Cookie 已导入，但没有找到 sessionid，请确认复制完整")
 		return
 	}
-	h.DB.Model(account).Updates(map[string]any{"cookie": req.Cookie, "status": "online"})
+	// 仅看 sessionid 存在并不等于登录态有效，必须用资料接口做真实校验
+	h.DB.Model(account).Updates(map[string]any{"cookie": req.Cookie})
+	if err := h.syncProfile(account); err != nil {
+		h.DB.Model(account).Update("status", "expired")
+		util.Fail(c, 400, "Cookie 无效或已失效："+err.Error())
+		return
+	}
+	h.DB.Model(account).Update("status", "online")
 	account.Status = "online"
-	_ = h.syncProfile(account)
 	h.audit(c, "account.cookie", account.Nickname, "导入 Cookie")
 	util.OKMsg(c, "登录态已导入", nil)
 }
