@@ -72,6 +72,15 @@ func (h *Handler) CreateTask(c *gin.Context) {
 		util.Fail(c, 404, "账号不存在")
 		return
 	}
+	ent, err := h.entitlement(c)
+	if err != nil {
+		util.Fail(c, 401, "登录态已失效")
+		return
+	}
+	if err := ent.CheckLimit("tasks", ent.Usage.Tasks); err != nil {
+		util.Fail(c, 403, err.Error())
+		return
+	}
 	enabled := true
 	if req.Enabled != nil {
 		enabled = *req.Enabled

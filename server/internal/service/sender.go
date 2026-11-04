@@ -59,6 +59,15 @@ func (s *Sender) SendForFriend(ctx context.Context, accountID, friendID, templat
 	if friend.AccountID != account.ID || friend.UserID != account.UserID {
 		return nil, errors.New("好友不属于该账号")
 	}
+
+	var owner model.User
+	if err := s.db.First(&owner, account.UserID).Error; err != nil {
+		return nil, errors.New("账号归属用户不存在")
+	}
+	ent := EntitlementOf(s.db, &owner, time.Now().In(s.loc))
+	if err := ent.CheckLimit("daily_send", ent.Usage.TodaySent); err != nil {
+		return nil, err
+	}
 	if friend.DouyinUserID == "" {
 		return nil, errors.New("缺少对方 user_id，无法发送")
 	}

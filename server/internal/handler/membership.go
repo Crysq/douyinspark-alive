@@ -38,11 +38,14 @@ func (h *Handler) Membership(c *gin.Context) {
 	var history []model.MembershipLog
 	h.DB.Where("user_id = ?", user.ID).Order("created_at desc").Limit(20).Find(&history)
 	now := time.Now().In(h.Cfg.Location)
+	ent := service.EntitlementOf(h.DB, user, now)
 	util.OK(c, gin.H{
 		"user":    h.View(user),
 		"plans":   service.Plans,
 		"history": history,
 		"now":     now,
+		"quota":   ent.Quota,
+		"usage":   ent.Usage,
 	})
 }
 

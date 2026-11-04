@@ -53,7 +53,8 @@ async function ensureSession(value) {
       headless: HEADLESS,
       userDataDir: profileDir,
       args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-        '--disable-gpu', '--disable-blink-features=AutomationControlled', '--lang=zh-CN'],
+        '--disable-gpu', '--disable-blink-features=AutomationControlled', '--lang=zh-CN',
+        '--remote-debugging-port=9222', '--remote-debugging-address=0.0.0.0'],
       defaultViewport: { width: 1400, height: 900 },
     })
     session.browser = browser
@@ -865,6 +866,51 @@ app.post('/probe', handle(async (req) => {
         return { count: urls.length, paths: [...paths].slice(0, 60), ctx: ctx.slice(0, 4) }
       })
     }
+    var findKeyword
+    if (req.body?.findKeyword) {
+      findKeyword = await page.evaluate(async (kw) => {
+        const urls = [...new Set(performance.getEntriesByType('resource').map((e) => e.name))].filter((u) => /\.js(\?|$)|es5|bundle/.test(u))
+        const hits = []
+        for (const u of urls) {
+          try {
+            const t = await (await fetch(u)).text()
+            if (t.includes(kw)) hits.push({ url: u, size: t.length, at: t.indexOf(kw) })
+          } catch (e) { }
+        }
+        return hits
+      }, req.body.findKeyword)
+    }
+    var resInfo
+    if (req.body?.resources) {
+      resInfo = await page.evaluate(() => [...new Set(performance.getEntriesByType('resource').map((e) => e.name))]
+        .filter((u) => /sec|sdk|risk|verify|guard/i.test(u)).slice(0, 60))
+    }
+    var pageXhr
+    if (req.body?.pageXhr) {
+      pageXhr = await page.evaluate(({ url, bodyB64 }) => new Promise((resolve) => {
+        try {
+          const bin = atob(bodyB64 || '')
+          const bytes = new Uint8Array(bin.length)
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i)
+          const xhr = new XMLHttpRequest()
+          xhr.open('POST', url, true)
+          xhr.withCredentials = true
+          xhr.responseType = 'arraybuffer'
+          xhr.setRequestHeader('content-type', 'application/x-protobuf')
+          xhr.setRequestHeader('accept', 'application/x-protobuf')
+          xhr.timeout = 15000
+          xhr.onload = () => {
+            const buf = new Uint8Array(xhr.response || new ArrayBuffer(0))
+            let s = ''
+            for (const b of buf.slice(0, 300)) s += (b >= 32 && b < 127) ? String.fromCharCode(b) : ' '
+            resolve({ ok: true, status: xhr.status, size: buf.length, printable: s.slice(0, 200) })
+          }
+          xhr.onerror = () => resolve({ ok: false, error: 'xhr error status=' + xhr.status })
+          xhr.ontimeout = () => resolve({ ok: false, error: 'timeout' })
+          xhr.send(bytes)
+        } catch (e) { resolve({ ok: false, error: String(e && e.message || e) }) }
+      }), { url: req.body.url, bodyB64: req.body.bodyB64 })
+    }
     var pageSend
     if (req.body?.pageSend) {
       pageSend = await page.evaluate(async ({ url, bodyB64 }) => {
@@ -1121,7 +1167,7 @@ app.post('/probe', handle(async (req) => {
   } finally {
     await page.close().catch(() => {})
   }
-  return { captured: captured.slice(0, 40), calls: calls.slice(0, 60), dom: req.body?.dom ? domItems : undefined, attrs: attrsDump, js: jsPaths, inputs: inputDump, imapi: imapiPaths, snap: snapInfo, bundles: bundleInfo, open: openInfo, scan: scanInfo, ws: wsInfo, guard: guardInfo, guardApi, guardTry, secureTry, certTry, pageSend }
+  return { captured: captured.slice(0, 40), calls: calls.slice(0, 60), dom: req.body?.dom ? domItems : undefined, attrs: attrsDump, js: jsPaths, inputs: inputDump, imapi: imapiPaths, snap: snapInfo, bundles: bundleInfo, open: openInfo, scan: scanInfo, ws: wsInfo, guard: guardInfo, guardApi, guardTry, secureTry, certTry, pageSend, pageXhr, resources: resInfo, findKeyword }
 }))
 app.post('/cookie/import', handle(async (req) => {
   if (!req.body?.cookie) throw new Error('cookie 必填')

@@ -101,6 +101,15 @@ func (h *Handler) CreateFriend(c *gin.Context) {
 		util.Fail(c, 404, "账号不存在")
 		return
 	}
+	ent, err := h.entitlement(c)
+	if err != nil {
+		util.Fail(c, 401, "登录态已失效")
+		return
+	}
+	if err := ent.CheckLimit("friends", ent.Usage.Friends); err != nil {
+		util.Fail(c, 403, err.Error())
+		return
+	}
 	autoKeep := true
 	if req.AutoKeep != nil {
 		autoKeep = *req.AutoKeep

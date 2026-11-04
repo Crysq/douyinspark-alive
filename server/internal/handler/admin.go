@@ -28,10 +28,26 @@ func (h *Handler) AdminStats(c *gin.Context) {
 	var accounts, records int64
 	h.DB.Model(&model.Account{}).Count(&accounts)
 	h.DB.Model(&model.Record{}).Count(&records)
+	var logs []model.MembershipLog
+	h.DB.Where("action IN ?", []string{"register", "redeem"}).Find(&logs)
+	byPlan := map[string]int{}
+	revenue := 0
+	for _, item := range logs {
+		byPlan[item.Plan]++
+		if plan, ok := service.PlanOf(item.Plan); ok {
+			revenue += plan.Price
+		}
+	}
+	distribution := make([]gin.H, 0, len(byPlan))
+	for plan, count := range byPlan {
+		distribution = append(distribution, gin.H{"plan": plan, "name": service.PlanLabel(plan), "count": count})
+	}
+
 	util.OK(c, gin.H{
 		"users": users, "members": members, "activeUsers": activeUsers,
 		"cards": cards, "cardsUsed": cardsUsed, "cardsLeft": cards - cardsUsed,
 		"accounts": accounts, "records": records,
+		"planDistribution": distribution, "revenue": revenue,
 	})
 }
 

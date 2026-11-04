@@ -55,6 +55,15 @@ func (h *Handler) CreateAccount(c *gin.Context) {
 		util.Fail(c, 400, "请填写账号名称")
 		return
 	}
+	ent, err := h.entitlement(c)
+	if err != nil {
+		util.Fail(c, 401, "登录态已失效")
+		return
+	}
+	if err := ent.CheckLimit("accounts", ent.Usage.Accounts); err != nil {
+		util.Fail(c, 403, err.Error())
+		return
+	}
 	account := model.Account{UserID: uid(c), Nickname: req.Nickname, Remark: req.Remark, Status: "offline"}
 	if err := h.DB.Create(&account).Error; err != nil {
 		util.Fail(c, 500, "创建账号失败")

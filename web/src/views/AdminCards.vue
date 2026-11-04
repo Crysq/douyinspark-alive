@@ -121,7 +121,7 @@ import { formatDay, formatDateTime } from '@/utils/format'
 const ui = useUiStore()
 const cards = ref<CardKey[]>([])
 const plans = ref<Plan[]>([])
-const stats = ref<AdminStats>({ users: 0, members: 0, activeUsers: 0, cards: 0, cardsUsed: 0, cardsLeft: 0, accounts: 0, records: 0 })
+const stats = ref<AdminStats>({ users: 0, members: 0, activeUsers: 0, cards: 0, cardsUsed: 0, cardsLeft: 0, accounts: 0, records: 0, revenue: 0, planDistribution: [] })
 const total = ref(0)
 const page = ref(1)
 const pageSize = 20

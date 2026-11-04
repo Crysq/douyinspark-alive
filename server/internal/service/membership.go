@@ -27,6 +27,32 @@ var Plans = []Plan{
 	{Code: "forever", Name: "永久卡", Days: 0, Price: 399, Desc: "永久有效，含后续更新"},
 }
 
+// Quota 套餐配额：0 表示不限量。
+type Quota struct {
+	MaxAccounts int `json:"maxAccounts"` // 托管抖音账号上限
+	MaxFriends  int `json:"maxFriends"`  // 火花好友上限
+	MaxTasks    int `json:"maxTasks"`    // 定时任务上限
+	MaxPerDay   int `json:"maxPerDay"`   // 每日续火发送上限
+}
+
+// Quotas 各套餐配额，与 Plans 的卡种一一对应。
+var Quotas = map[string]Quota{
+	"day":     {MaxAccounts: 1, MaxFriends: 3, MaxTasks: 1, MaxPerDay: 10},
+	"week":    {MaxAccounts: 2, MaxFriends: 10, MaxTasks: 2, MaxPerDay: 50},
+	"month":   {MaxAccounts: 3, MaxFriends: 30, MaxTasks: 5, MaxPerDay: 200},
+	"quarter": {MaxAccounts: 5, MaxFriends: 100, MaxTasks: 10, MaxPerDay: 500},
+	"year":    {MaxAccounts: 10, MaxFriends: 300, MaxTasks: 30, MaxPerDay: 2000},
+	"forever": {MaxAccounts: 0, MaxFriends: 0, MaxTasks: 0, MaxPerDay: 0},
+}
+
+// QuotaOf 返回套餐配额，未知套餐按日卡兜底（最小权限）。
+func QuotaOf(plan string) Quota {
+	if quota, ok := Quotas[plan]; ok {
+		return quota
+	}
+	return Quotas["day"]
+}
+
 // ForeverYears 永久卡的到期时间（实际等于永久）。
 const ForeverYears = 100
 

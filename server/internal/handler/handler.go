@@ -2,6 +2,7 @@
 package handler
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -78,6 +79,15 @@ func (h *Handler) currentUser(c *gin.Context) (*model.User, bool) {
 		return nil, false
 	}
 	return &user, true
+}
+
+// entitlement 读取当前用户的套餐权限与用量。
+func (h *Handler) entitlement(c *gin.Context) (*service.Entitlement, error) {
+	user, ok := h.currentUser(c)
+	if !ok {
+		return nil, fmt.Errorf("用户不存在")
+	}
+	return service.EntitlementOf(h.DB, user, time.Now().In(h.Cfg.Location)), nil
 }
 
 // setting 读取当前用户设置，不存在则创建默认值。

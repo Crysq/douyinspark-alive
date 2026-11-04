@@ -80,6 +80,8 @@ export interface AdminStats {
   cardsLeft: number
   accounts: number
   records: number
+  revenue: number
+  planDistribution: { plan: string; name: string; count: number }[]
 }
 
 export interface Account {

@@ -40,6 +40,18 @@
     </div>
 
     <section class="card card-pad">
+      <h3 class="card-title">套餐配额</h3>
+      <p class="card-sub">当前用量与上限（永久卡不限量）</p>
+      <div class="quota-grid">
+        <div v-for="row in quotaRows" :key="row.key" class="quota-item">
+          <div class="quota-top"><span>{{ row.label }}</span><b>{{ row.used }}<small v-if="row.limit"> / {{ row.limit }}</small></b></div>
+          <div class="quota-bar"><span :style="{ width: row.pct + '%' }" :class="{ over: row.pct >= 100 }" /></div>
+          <small class="quota-note">{{ row.limit ? (row.pct >= 100 ? '已达上限，请升级套餐' : `剩余 ${Math.max(0, row.limit - row.used)}`) : '不限量' }}</small>
+        </div>
+      </div>
+    </section>
+
+    <section class="card card-pad">
       <div class="card-head">
         <div>
           <h3 class="card-title">卡种与价格</h3>
@@ -97,6 +109,17 @@ const code = ref('')
 const redeeming = ref(false)
 
 const plans = computed(() => info.value?.plans || [])
+const quotaRows = computed(() => {
+  const q = (info.value as any)?.quota || {}
+  const u = (info.value as any)?.usage || {}
+  const rows = [
+    { key: 'accounts', label: '托管账号', used: u.accounts || 0, limit: q.maxAccounts || 0 },
+    { key: 'friends', label: '火花好友', used: u.friends || 0, limit: q.maxFriends || 0 },
+    { key: 'tasks', label: '定时任务', used: u.tasks || 0, limit: q.maxTasks || 0 },
+    { key: 'daily', label: '今日发送', used: u.todaySent || 0, limit: q.maxPerDay || 0 },
+  ]
+  return rows.map((r) => ({ ...r, pct: r.limit ? Math.min(100, Math.round((r.used / r.limit) * 100)) : 0 }))
+})
 const history = computed(() => info.value?.history || [])
 const isForever = computed(() => (info.value?.user.daysLeft ?? 0) < 0)
 const statusText = computed(() => {
@@ -175,6 +198,18 @@ onMounted(load)
 .p-days { font-size: 11.5px; color: var(--text-2); }
 .p-desc { font-size: 10.5px; color: var(--muted-2); line-height: 1.5; }
 .code { font-size: 11.5px; color: var(--muted); }
+
+.quota-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 14px; margin-top: 16px; }
+.quota-item { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-radius: 12px; border: 1px solid var(--line); background: var(--surface); }
+.quota-top { display: flex; align-items: center; justify-content: space-between; font-size: 11.5px; color: var(--muted); }
+.quota-top b { color: var(--text); font-size: 15px; font-variant-numeric: tabular-nums; }
+.quota-top small { color: var(--muted-2); font-size: 11px; }
+.quota-bar { height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.quota-bar span { display: block; height: 100%; border-radius: 999px; background: var(--flame-grad); transition: width .5s var(--ease); }
+.quota-bar span.over { background: linear-gradient(90deg, #ff7a5c, #ff3d71); }
+.quota-note { font-size: 10px; color: var(--muted-2); }
+
+@media (max-width: 900px) { .quota-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 
 @media (max-width: 1180px) { .plan-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
 @media (max-width: 900px) {

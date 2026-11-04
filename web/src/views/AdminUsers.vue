@@ -15,7 +15,17 @@
       <div class="card"><span>未使用卡密</span><b class="num warn">{{ stats.cardsLeft }}</b></div>
       <div class="card"><span>托管账号</span><b class="num">{{ stats.accounts }}</b></div>
       <div class="card"><span>累计发送</span><b class="num">{{ stats.records }}</b></div>
+      <div class="card revenue"><span>卡密营收（元）</span><b class="num">¥{{ stats.revenue }}</b></div>
     </div>
+
+    <section class="card card-pad distribution" v-if="stats.planDistribution?.length">
+      <h3 class="card-title">卡种分布</h3>
+      <div class="dist-row">
+        <div v-for="item in stats.planDistribution" :key="item.plan" class="dist-item">
+          <strong>{{ item.name }}</strong><span>{{ item.count }} 张</span>
+        </div>
+      </div>
+    </section>
 
     <section class="card">
       <div class="filters">
@@ -108,7 +118,7 @@ import { formatDay, timeAgo } from '@/utils/format'
 
 const ui = useUiStore()
 const rows = ref<AdminUserRow[]>([])
-const stats = ref<AdminStats>({ users: 0, members: 0, activeUsers: 0, cards: 0, cardsUsed: 0, cardsLeft: 0, accounts: 0, records: 0 })
+const stats = ref<AdminStats>({ users: 0, members: 0, activeUsers: 0, cards: 0, cardsUsed: 0, cardsLeft: 0, accounts: 0, records: 0, revenue: 0, planDistribution: [] })
 const plans = ref<Plan[]>([])
 const total = ref(0)
 const page = ref(1)
@@ -195,12 +205,18 @@ onMounted(async () => {
 </script>
 
 <style scoped>
-.stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 12px; }
+.stats { display: grid; grid-template-columns: repeat(7, 1fr); gap: 12px; }
 .stats .card { padding: 14px 16px; display: flex; flex-direction: column; gap: 4px; }
 .stats span { font-size: 11px; color: var(--muted-2); }
 .stats b { font-size: 21px; font-weight: 700; letter-spacing: -.02em; }
 .stats b.ok { color: var(--safe); }
 .stats b.warn { color: var(--warn); }
+.revenue b { color: var(--flame-1); }
+.distribution { display: flex; flex-direction: column; gap: 12px; }
+.dist-row { display: flex; gap: 10px; flex-wrap: wrap; }
+.dist-item { display: flex; align-items: center; gap: 8px; padding: 7px 12px; border-radius: 10px; background: var(--surface); border: 1px solid var(--line); font-size: 12px; }
+.dist-item strong { font-weight: 620; }
+.dist-item span { color: var(--muted-2); font-size: 11px; }
 
 .filters { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 18px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
 .seg { display: flex; gap: 3px; padding: 3px; background: var(--surface); border: 1px solid var(--line); border-radius: 11px; }
