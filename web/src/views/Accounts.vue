@@ -27,6 +27,9 @@
               </span>
             </div>
             <small class="ellipsis">{{ account.uniqueId ? '@' + account.uniqueId : '尚未同步资料' }}</small>
+            <span v-if="inRisk(account)" class="risk-tag" :title="account.riskReason">
+              风控冷却至 {{ formatDay(account.riskUntil) }}
+            </span>
           </div>
           <button class="btn btn-icon btn-sm btn-ghost" title="更多" @click="menuFor = menuFor === account.id ? 0 : account.id">
             <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="1.6" /><circle cx="12" cy="12" r="1.6" /><circle cx="19" cy="12" r="1.6" /></svg>
@@ -42,6 +45,7 @@
         <p class="sync">最近同步：{{ timeAgo(account.lastSyncAt) }}</p>
 
         <footer class="a-foot">
+          <button v-if="inRisk(account)" class="btn btn-sm" @click="clearRisk(account)">解除冷却</button>
           <button class="btn btn-sm" @click="openQR(account)">
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1.5" /><rect x="14" y="3" width="7" height="7" rx="1.5" /><rect x="3" y="14" width="7" height="7" rx="1.5" /><path d="M14 14h3v3h-3zM20 20h1M14 20h2M20 14h1" /></svg>
             扫码登录
@@ -121,7 +125,7 @@ import EmptyState from '@/components/EmptyState.vue'
 import { accountApi } from '@/api'
 import type { Account } from '@/api/types'
 import { useUiStore } from '@/stores/ui'
-import { timeAgo } from '@/utils/format'
+import { formatDay, timeAgo } from '@/utils/format'
 
 const ui = useUiStore()
 const accounts = ref<Account[]>([])
@@ -258,6 +262,20 @@ async function logout(account: Account) {
   }
 }
 
+function inRisk(account: Account) {
+  return Boolean(account.riskUntil && new Date(account.riskUntil).getTime() > Date.now())
+}
+
+async function clearRisk(account: Account) {
+  try {
+    await accountApi.update(account.id, { clearRisk: true })
+    ui.toast('success', '已解除风控冷却')
+    await load()
+  } catch (error) {
+    ui.toast('error', (error as Error).message)
+  }
+}
+
 async function remove(account: Account) {
   if (!window.confirm(`删除「${account.nickname}」会同时移除其好友，确定？`)) return
   try {
@@ -286,6 +304,7 @@ onBeforeUnmount(() => window.clearInterval(poll))
 .stats b.danger { color: var(--urgent); }
 .stats span { font-size: 10.5px; color: var(--muted-2); }
 .sync { font-size: 11px; color: var(--muted-2); }
+.risk-tag { margin-top: 2px; font-size: 10px; color: #ff8fa3; background: rgba(255, 90, 120, .12); border: 1px solid rgba(255, 90, 120, .25); border-radius: 6px; padding: 1px 6px; width: fit-content; }
 .a-foot { display: flex; gap: 6px; flex-wrap: wrap; padding-top: 12px; border-top: 1px solid var(--line); }
 
 .menu { position: absolute; right: 14px; top: 58px; z-index: 20; padding: 6px; width: 168px; }

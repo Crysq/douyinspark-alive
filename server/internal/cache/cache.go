@@ -50,6 +50,20 @@ func (c *Cache) SetJSON(ctx context.Context, key string, value any, ttl time.Dur
 	c.rdb.Set(ctx, key, raw, ttl)
 }
 
+// GetList 读取一个 uint 列表（模板去重用）。
+func (c *Cache) GetList(ctx context.Context, key string) []uint {
+	var out []uint
+	if c.GetJSON(ctx, key, &out) {
+		return out
+	}
+	return nil
+}
+
+// SetList 写入 uint 列表。
+func (c *Cache) SetList(ctx context.Context, key string, value []uint, ttl time.Duration) {
+	c.SetJSON(ctx, key, value, ttl)
+}
+
 // Del 删除缓存键。
 func (c *Cache) Del(ctx context.Context, keys ...string) {
 	if len(keys) == 0 {

@@ -3,6 +3,7 @@ package service
 import (
 	"bytes"
 	"errors"
+	"math/rand"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -84,7 +85,10 @@ func (s *Scheduler) tick(ctx context.Context) {
 		if !WithinWindow(now, task.WindowStart, task.WindowEnd) {
 			continue
 		}
-		if task.LastRunAt != nil && now.Sub(task.LastRunAt.In(s.loc)) < time.Duration(task.IntervalMin)*time.Minute {
+		// 间隔抖动 ±30%：固定周期是最明显的机器特征
+		interval := time.Duration(task.IntervalMin) * time.Minute
+		jitter := time.Duration(float64(interval) * (0.7 + rand.Float64()*0.6))
+		if task.LastRunAt != nil && now.Sub(task.LastRunAt.In(s.loc)) < jitter {
 			continue
 		}
 		if sent := s.runTask(ctx, task, setting.RetryTimes, false); sent > 0 {
@@ -138,6 +142,10 @@ func (s *Scheduler) runTask(ctx context.Context, task *model.Task, retries int, 
 		if manual {
 			// 手动触发不受幂等限制影响，但仍记录一次尝试
 			s.rdb.Del(ctx, onceKey)
+		}
+		if !manual {
+			// 每条之间随机停顿 3–9 秒，避免"同一秒批量发送"
+			time.Sleep(time.Duration(3000+rand.Intn(6000)) * time.Millisecond)
 		}
 		for attempt := 0; attempt <= retries; attempt++ {
 			result, err := s.sender.SendForFriend(ctx, task.AccountID, friend.ID, task.TemplateID, task.ID, sourceOf(manual))

@@ -146,6 +146,24 @@ func (c *Client) Logout(accountID uint) error {
 	return c.post("/logout", map[string]uint{"accountId": accountID}, &out)
 }
 
+// BrowserConfig 账号级浏览器指纹与出口配置。
+type BrowserConfig struct {
+	UserAgent string `json:"userAgent"`
+	Timezone  string `json:"timezone"`
+	Locale    string `json:"locale"`
+	Viewport  string `json:"viewport"`
+	ProxyURL  string `json:"proxyUrl"`
+}
+
+// SetBrowserConfig 把指纹写入该账号的浏览器 profile，下次启动会话时生效。
+func (c *Client) SetBrowserConfig(accountID uint, cfg BrowserConfig) error {
+	var out map[string]any
+	return c.post("/session/config", map[string]any{
+		"accountId": accountID, "userAgent": cfg.UserAgent, "timezone": cfg.Timezone,
+		"locale": cfg.Locale, "viewport": cfg.Viewport, "proxyUrl": cfg.ProxyURL,
+	}, &out)
+}
+
 // Fetch 在指定账号的登录上下文里发起一次已签名请求。
 func (c *Client) Fetch(accountID uint, cookie, url, method, body string, headers map[string]string) (*FetchResult, error) {
 	var out FetchResult

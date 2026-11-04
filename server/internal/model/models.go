@@ -72,6 +72,15 @@ type Account struct {
 	Cookie     string     `gorm:"type:text" json:"-"`
 	Status     string     `gorm:"size:16;default:offline;index" json:"status"` // online | offline | expired
 	Remark     string     `gorm:"size:255" json:"remark"`
+	// 稳定设备指纹：一旦生成就不再变化，避免"同账号不停换设备"
+	UserAgent  string     `gorm:"size:512" json:"userAgent"`
+	Timezone   string     `gorm:"size:64" json:"timezone"`
+	Locale     string     `gorm:"size:32" json:"locale"`
+	Viewport   string     `gorm:"size:32" json:"viewport"`
+	ProxyURL   string     `gorm:"size:255" json:"proxyUrl"`
+	// 风控冷却：命中风控后到该时间前不再发送
+	RiskUntil  *time.Time `json:"riskUntil"`
+	RiskReason string     `gorm:"size:255" json:"riskReason"`
 	LastSyncAt *time.Time `json:"lastSyncAt"`
 	CreatedAt  time.Time  `json:"createdAt"`
 	UpdatedAt  time.Time  `json:"updatedAt"`
@@ -156,6 +165,9 @@ type Setting struct {
 	AutoSync      bool      `gorm:"default:true" json:"autoSync"`
 	KeepAlive     bool      `gorm:"default:true" json:"keepAlive"`
 	Theme         string    `gorm:"size:16;default:dark" json:"theme"`
+	// 新账号冷启动：注册后 N 天内每天最多发送 M 条（0 表示关闭）
+	WarmupDays  int `gorm:"default:3" json:"warmupDays"`
+	WarmupDaily int `gorm:"default:5" json:"warmupDaily"`
 	UpdatedAt     time.Time `json:"updatedAt"`
 }
 

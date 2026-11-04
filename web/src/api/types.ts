@@ -93,6 +93,13 @@ export interface Account {
   avatarUrl: string
   status: 'online' | 'offline' | 'expired'
   remark: string
+  userAgent: string
+  timezone: string
+  locale: string
+  viewport: string
+  proxyUrl: string
+  riskUntil?: string | null
+  riskReason: string
   lastSyncAt?: string | null
   createdAt: string
   friendCount: number
@@ -223,6 +230,8 @@ export interface Setting {
   autoSync: boolean
   keepAlive: boolean
   theme: string
+  warmupDays: number
+  warmupDaily: number
   updatedAt: string
 }
 

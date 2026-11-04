@@ -2,6 +2,7 @@ package handler
 
 import (
 	"fmt"
+	"math/rand"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -43,10 +44,22 @@ func (h *Handler) Accounts(c *gin.Context) {
 }
 
 type accountReq struct {
-	Nickname string `json:"nickname"`
-	Remark   string `json:"remark"`
-	Cookie   string `json:"cookie"`
+	Nickname  string `json:"nickname"`
+	Remark    string `json:"remark"`
+	Cookie    string `json:"cookie"`
+	ProxyURL  string `json:"proxyUrl"`
+	ClearRisk bool   `json:"clearRisk"`
 }
+
+// 一批常见桌面 UA，创建账号时随机绑定并长期固定。
+var userAgents = []string{
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/156.0.0.0 Safari/537.36",
+	"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.2 Safari/605.1.15",
+	"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/155.0.0.0 Safari/537.36 Edg/155.0.0.0",
+}
+
+func pickUserAgent() string { return userAgents[rand.Intn(len(userAgents))] }
 
 // CreateAccount 新增托管账号。
 func (h *Handler) CreateAccount(c *gin.Context) {
@@ -64,7 +77,10 @@ func (h *Handler) CreateAccount(c *gin.Context) {
 		util.Fail(c, 403, err.Error())
 		return
 	}
-	account := model.Account{UserID: uid(c), Nickname: req.Nickname, Remark: req.Remark, Status: "offline"}
+	account := model.Account{
+		UserID: uid(c), Nickname: req.Nickname, Remark: req.Remark, Status: "offline",
+		UserAgent: pickUserAgent(), Timezone: "Asia/Shanghai", Locale: "zh-CN", Viewport: "1400x900",
+	}
 	if err := h.DB.Create(&account).Error; err != nil {
 		util.Fail(c, 500, "创建账号失败")
 		return
@@ -75,6 +91,12 @@ func (h *Handler) CreateAccount(c *gin.Context) {
 			account.Status = "online"
 			_ = h.syncProfile(&account)
 		}
+	}
+	if h.Sign.Configured() {
+		_ = h.Sign.SetBrowserConfig(account.ID, signer.BrowserConfig{
+			UserAgent: account.UserAgent, Timezone: account.Timezone,
+			Locale: account.Locale, Viewport: account.Viewport, ProxyURL: account.ProxyURL,
+		})
 	}
 	h.audit(c, "account.create", req.Nickname, "新增托管账号")
 	util.OK(c, account)
@@ -92,10 +114,26 @@ func (h *Handler) UpdateAccount(c *gin.Context) {
 		updates["nickname"] = req.Nickname
 	}
 	updates["remark"] = req.Remark
+	if req.ProxyURL != "" {
+		updates["proxy_url"] = req.ProxyURL
+	}
+	if req.ClearRisk {
+		updates["risk_until"] = nil
+		updates["risk_reason"] = ""
+	}
 	res := h.DB.Model(&model.Account{}).Where("id = ? AND user_id = ?", c.Param("id"), uid(c)).Updates(updates)
 	if res.RowsAffected == 0 {
 		util.Fail(c, 404, "账号不存在")
 		return
+	}
+	if req.ProxyURL != "" && h.Sign.Configured() {
+		var acc model.Account
+		if err := h.DB.First(&acc, c.Param("id")).Error; err == nil {
+			_ = h.Sign.SetBrowserConfig(acc.ID, signer.BrowserConfig{
+				UserAgent: acc.UserAgent, Timezone: acc.Timezone, Locale: acc.Locale,
+				Viewport: acc.Viewport, ProxyURL: req.ProxyURL,
+			})
+		}
 	}
 	h.audit(c, "account.update", c.Param("id"), "更新账号信息")
 	util.OKMsg(c, "已保存", nil)

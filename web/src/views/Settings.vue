@@ -25,6 +25,15 @@
             <div><strong>保持会话活跃</strong><span>定期刷新浏览器会话，降低掉线概率</span></div>
             <Toggle v-model="form.keepAlive" />
           </div>
+          <div class="row-item">
+            <div><strong>新号冷启动</strong><span>注册后 N 天内每天最多 M 条，降低新号被风控概率</span></div>
+            <div class="row gap-6">
+              <input v-model.number="form.warmupDays" type="number" min="0" max="30" class="input tiny" />
+              <span class="muted">天</span>
+              <input v-model.number="form.warmupDaily" type="number" min="0" max="50" class="input tiny" />
+              <span class="muted">条/天</span>
+            </div>
+          </div>
         </div>
       </section>
 
@@ -148,6 +157,7 @@ const password = reactive({ old: '', next: '' })
 const form = reactive<Setting>({
   id: 1, retryTimes: 2, quietStart: '00:30', quietEnd: '07:00',
   notifyBreak: true, notifyWebhook: '', autoSync: true, keepAlive: true, theme: 'dark', updatedAt: '',
+  warmupDays: 3, warmupDaily: 5,
 })
 
 const uptime = computed(() => {

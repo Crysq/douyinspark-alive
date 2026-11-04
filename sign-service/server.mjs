@@ -33,6 +33,14 @@ function accountKey(value) {
   return String(id)
 }
 
+function readBrowserConfig(profileDir) {
+  try {
+    return JSON.parse(fs.readFileSync(path.join(profileDir, 'browser.json'), 'utf8'))
+  } catch (e) {
+    return {}
+  }
+}
+
 async function ensureSession(value) {
   const id = accountKey(value)
   const existing = sessions.get(id)
@@ -47,15 +55,21 @@ async function ensureSession(value) {
     for (const name of ['SingletonLock', 'SingletonCookie', 'SingletonSocket']) {
       fs.rmSync(path.join(profileDir, name), { force: true })
     }
-    log(`启动会话 account=${id} headless=${HEADLESS}`)
+    const browserCfg = readBrowserConfig(profileDir)
+    const launchArgs = ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
+      '--disable-gpu', '--disable-blink-features=AutomationControlled',
+      `--lang=${browserCfg.locale || 'zh-CN'}`]
+    if (browserCfg.proxyUrl) launchArgs.push(`--proxy-server=${browserCfg.proxyUrl}`)
+    log(`启动会话 account=${id} headless=${HEADLESS} proxy=${browserCfg.proxyUrl ? 'on' : 'off'}`)
     const browser = await puppeteer.launch({
       executablePath: CHROME_PATH,
       headless: HEADLESS,
       userDataDir: profileDir,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage',
-        '--disable-gpu', '--disable-blink-features=AutomationControlled', '--lang=zh-CN',
-        ],
-      defaultViewport: { width: 1400, height: 900 },
+      args: launchArgs,
+      defaultViewport: (() => {
+        const [w, h] = String(browserCfg.viewport || '1400x900').split('x').map(Number)
+        return { width: w || 1400, height: h || 900 }
+      })(),
     })
     session.browser = browser
     browser.on('disconnected', () => {
@@ -100,7 +114,9 @@ async function ensureSession(value) {
     await session.page.evaluateOnNewDocument(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined })
     })
-    await session.page.setExtraHTTPHeaders({ 'Accept-Language': 'zh-CN,zh;q=0.9' })
+    if (browserCfg.userAgent) await session.page.setUserAgent(browserCfg.userAgent)
+    await session.page.setExtraHTTPHeaders({ 'Accept-Language': `${browserCfg.locale || 'zh-CN'},zh;q=0.9` })
+    if (browserCfg.timezone) await session.page.emulateTimezone(browserCfg.timezone).catch(() => {})
     await session.page.goto(HOME, { waitUntil: 'domcontentloaded', timeout: 45000 })
     await session.page
       .waitForFunction(() => typeof window.byted_acrawler?.frontierSign === 'function', { timeout: 20000 })
@@ -276,7 +292,13 @@ async function sendChatMessage({ accountId, nickname, text, debug: req_debug }) 
     }, nickname)
     if (!pos) return finish('not_sent', `会话列表里找不到「${nickname}」，请先同步会话`)
     await page.mouse.click(pos.x, pos.y)
-    await sleep(2500)
+    // 先读后发：模拟打开会话后先浏览消息，再输入
+    await sleep(900 + Math.random() * 1200)
+    await page.mouse.move(pos.x, pos.y + 120)
+    await page.mouse.wheel({ deltaY: -260 }).catch(() => {})
+    await sleep(500 + Math.random() * 800)
+    await page.mouse.wheel({ deltaY: 260 }).catch(() => {})
+    await sleep(700 + Math.random() * 1200)
 
     // 2) 等输入框出现（Draft.js 的 contenteditable）
     const editorPos = await page.evaluate(() => {
@@ -292,7 +314,7 @@ async function sendChatMessage({ accountId, nickname, text, debug: req_debug }) 
     // 3) 真实键盘输入；多行用 Shift+Enter 换行，最后再按 Enter 发送
     const lines = String(text).split(/\r?\n/)
     for (let i = 0; i < lines.length; i++) {
-      if (lines[i]) await page.keyboard.type(lines[i], { delay: 18 })
+      if (lines[i]) await page.keyboard.type(lines[i], { delay: 12 + Math.floor(Math.random() * 28) })
       if (i < lines.length - 1) {
         await page.keyboard.down('Shift')
         await page.keyboard.press('Enter')
@@ -313,7 +335,7 @@ async function sendChatMessage({ accountId, nickname, text, debug: req_debug }) 
       return true
     })
     if (!sentByButton) await page.keyboard.press('Enter')
-    await sleep(2500)
+    await sleep(1200 + Math.random() * 1500)
 
     // 5) 回执：去掉空白后，在最近 2000 字里找我们刚发的文本
     const seen = await page.evaluate((t) => {
@@ -364,6 +386,25 @@ app.post('/fetch', handle(async (req) => {
   if (!req.body?.url) return { status: 400, body: '', error: 'url 必填' }
   return siteFetch(req.body)
 }))
+app.post('/session/config', handle(async (req) => {
+  const id = accountKey(idOf(req))
+  const dir = path.join(PROFILE_ROOT, `acct-${id}`)
+  fs.mkdirSync(dir, { recursive: true })
+  const cfg = {
+    userAgent: req.body?.userAgent || '',
+    timezone: req.body?.timezone || '',
+    locale: req.body?.locale || '',
+    viewport: req.body?.viewport || '',
+    proxyUrl: req.body?.proxyUrl || '',
+  }
+  fs.writeFileSync(path.join(dir, 'browser.json'), JSON.stringify(cfg, null, 2))
+  // 关掉当前会话，下次调用按新配置重建
+  const session = sessions.get(String(id))
+  if (session?.browser) { await session.browser.close().catch(() => {}) }
+  sessions.delete(String(id))
+  return { ok: true, config: cfg }
+}))
+
 app.post('/im/send', handle(async (req) => {
   if (!req.body?.text) throw new Error('text 必填')
   return sendChatMessage({ accountId: idOf(req), nickname: req.body.nickname, text: String(req.body.text).slice(0, 800), debug: req.body.debug })

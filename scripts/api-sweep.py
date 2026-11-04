@@ -61,34 +61,50 @@ st, data, _ = check("登录-管理员", "POST", "/auth/login", 200, body={"usern
 ADMIN = data["data"]["token"]
 check("登录-空参数", "POST", "/auth/login", 400, body={})
 check("令牌无效", "GET", "/auth/me", 401, token="bad.token.here")
+mode_status, mode_payload, mode_headers = call("GET", "/auth/mode")
+mode_data = decode(mode_status, mode_payload, mode_headers)
+SAAS = isinstance(mode_data, dict) and mode_data.get("data", {}).get("mode") == "saas"
+print(f"     登录模式: {'saas（卡密会员）' if SAAS else 'simple（仅管理员）'}")
 
-st, data, _ = check("生成月卡", "POST", "/admin/cards/generate", 200, ADMIN, {"plan": "month", "count": 1, "note": "sweep"})
-CARD = data["data"]["cards"][0]["code"]
+if SAAS:
+    st, data, _ = check("生成月卡", "POST", "/admin/cards/generate", 200, ADMIN, {"plan": "month", "count": 1, "note": "sweep"})
+    CARD = data["data"]["cards"][0]["code"]
 uname = "sweep" + time.strftime("%H%M%S")
-st, data, _ = check("注册-卡密开通", "POST", "/auth/register", 200,
-                    body={"username": uname, "password": "test123456", "nickname": "冒烟用户", "cardCode": CARD})
-USER = data["data"]["token"]
-USER_ID = data["data"]["user"]["id"]
-check("注册-重复用户名", "POST", "/auth/register", 400,
-      body={"username": uname, "password": "test123456", "cardCode": CARD})
-check("注册-卡密已用", "POST", "/auth/register", 400,
-      body={"username": uname + "x", "password": "test123456", "cardCode": CARD})
-check("注册-无卡密", "POST", "/auth/register", 400, body={"username": uname + "y", "password": "test123456"})
-check("注册-弱密码", "POST", "/auth/register", 400, body={"username": uname + "z", "password": "123", "cardCode": CARD})
+if SAAS:
+    st, data, _ = check("注册-卡密开通", "POST", "/auth/register", 200,
+                        body={"username": uname, "password": "test123456", "nickname": "冒烟用户", "cardCode": CARD})
+    USER = data["data"]["token"]
+    USER_ID = data["data"]["user"]["id"]
+    check("注册-重复用户名", "POST", "/auth/register", 400,
+          body={"username": uname, "password": "test123456", "cardCode": CARD})
+    check("注册-卡密已用", "POST", "/auth/register", 400,
+          body={"username": uname + "x", "password": "test123456", "cardCode": CARD})
+    check("注册-无卡密", "POST", "/auth/register", 400, body={"username": uname + "y", "password": "test123456"})
+    check("注册-弱密码", "POST", "/auth/register", 400, body={"username": uname + "z", "password": "123", "cardCode": CARD})
+else:
+    check("注册-simple 模式已关闭", "POST", "/auth/register", 404,
+          body={"username": uname, "password": "test123456", "cardCode": "DYSP-AAAA-BBBB-CCCC"})
+    USER = ADMIN
+    USER_ID = 1
 
 print()
 print("=" * 110)
 print("会员")
 print("=" * 110)
-check("卡种-公开", "GET", "/membership/plans", 200)
-check("会员-当前", "GET", "/membership", 200, USER)
-check("会员-兑换无效", "POST", "/membership/redeem", 400, USER, {"code": "DYSP-AAAA-BBBB-CCCC"})
-check("会员-兑换已用", "POST", "/membership/redeem", 400, USER, {"code": CARD})
-st, data, _ = check("生成日卡", "POST", "/admin/cards/generate", 200, ADMIN, {"plan": "day", "count": 1})
-DAY = data["data"]["cards"][0]["code"]
-st, data, _ = check("会员-兑换有效", "POST", "/membership/redeem", 200, USER, {"code": DAY.lower().replace("-", "")})
-USER = data["data"]["token"]  # 兑换后换发的新令牌
-check("会员-未登录", "POST", "/membership/redeem", 401, body={"code": DAY})
+if SAAS:
+    check("卡种-公开", "GET", "/membership/plans", 200)
+    check("会员-当前", "GET", "/membership", 200, USER)
+    check("会员-兑换无效", "POST", "/membership/redeem", 400, USER, {"code": "DYSP-AAAA-BBBB-CCCC"})
+    check("会员-兑换已用", "POST", "/membership/redeem", 400, USER, {"code": CARD})
+    st, data, _ = check("生成日卡", "POST", "/admin/cards/generate", 200, ADMIN, {"plan": "day", "count": 1})
+    DAY = data["data"]["cards"][0]["code"]
+    st, data, _ = check("会员-兑换有效", "POST", "/membership/redeem", 200, USER, {"code": DAY.lower().replace("-", "")})
+    USER = data["data"]["token"]
+    check("会员-未登录", "POST", "/membership/redeem", 401, body={"code": DAY})
+else:
+    check("卡种-公开", "GET", "/membership/plans", 200)
+    check("会员中心-simple 模式已关闭", "GET", "/membership", 404, USER)
+    check("会员兑换-simple 模式已关闭", "POST", "/membership/redeem", 404, USER, {"code": "DYSP-AAAA-BBBB-CCCC"})
 
 print()
 print("=" * 110)
@@ -114,7 +130,8 @@ check("账号同步资料", "POST", f"/accounts/{ACC}/sync", 502, USER)
 check("同步会话-离线拦截", "POST", f"/accounts/{ACC}/sync/friends", 409, USER)
 check("表情-离线拦截", "GET", f"/accounts/{ACC}/emojis", 409, USER)
 check("账号Cookie非法", "POST", f"/accounts/{ACC}/cookie", 400, USER, {"cookie": "foo=bar"})
-check("账号-越权改名", "PATCH", f"/accounts/{ACC}", 404, ADMIN, {"nickname": "hack"})
+if SAAS:
+    check("账号-越权改名", "PATCH", f"/accounts/{ACC}", 404, ADMIN, {"nickname": "hack"})
 
 print()
 print("=" * 110)
@@ -172,17 +189,19 @@ print("=" * 110)
 check("运营概览", "GET", "/admin/stats", 200, ADMIN)
 check("用户列表", "GET", "/admin/users?page=1", 200, ADMIN)
 check("用户搜索", "GET", "/admin/users?keyword=" + uname, 200, ADMIN)
-check("用户-赠送会员", "POST", f"/admin/users/{USER_ID}/grant", 200, ADMIN, {"plan": "week"})
-check("用户-禁用", "PATCH", f"/admin/users/{USER_ID}", 200, ADMIN, {"status": "banned"})
-check("被禁用后登录", "POST", "/auth/login", 403, body={"username": uname, "password": "test123456"})
-check("用户-恢复", "PATCH", f"/admin/users/{USER_ID}", 200, ADMIN, {"status": "active"})
+if SAAS:
+    check("用户-赠送会员", "POST", f"/admin/users/{USER_ID}/grant", 200, ADMIN, {"plan": "week"})
+    check("用户-禁用", "PATCH", f"/admin/users/{USER_ID}", 200, ADMIN, {"status": "banned"})
+    check("被禁用后登录", "POST", "/auth/login", 403, body={"username": uname, "password": "test123456"})
+    check("用户-恢复", "PATCH", f"/admin/users/{USER_ID}", 200, ADMIN, {"status": "active"})
 check("卡密列表", "GET", "/admin/cards?page=1", 200, ADMIN)
 st, data, _ = check("卡密生成-年卡", "POST", "/admin/cards/generate", 200, ADMIN, {"plan": "year", "count": 2, "validDays": 30})
 VOID_ID = data["data"]["cards"][0]["id"]
 check("卡密作废", "POST", f"/admin/cards/{VOID_ID}/void", 200, ADMIN)
 check("卡密作废-重复", "POST", f"/admin/cards/{VOID_ID}/void", 400, ADMIN)
 check("卡密导出", "GET", "/admin/cards/export", 200, ADMIN)
-check("越权-用户访问管理端", "GET", "/admin/users", 403, USER)
+if SAAS:
+    check("越权-用户访问管理端", "GET", "/admin/users", 403, USER)
 
 print()
 print("=" * 110)
