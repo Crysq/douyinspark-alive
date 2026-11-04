@@ -6,6 +6,11 @@
 
 Go + Gin + GORM + MySQL + Redis ｜ Vue 3 + TypeScript + Vite ｜ Chromium 签名服务
 
+[![CI](https://github.com/Crysq/douyinspark-alive/actions/workflows/ci.yml/badge.svg)](https://github.com/Crysq/douyinspark-alive/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+[![Go](https://img.shields.io/badge/Go-1.23-00ADD8?logo=go)](https://go.dev)
+[![Vue](https://img.shields.io/badge/Vue-3-42b883?logo=vue.js)](https://vuejs.org)
+
 </div>
 
 ---
@@ -117,8 +122,11 @@ scripts/       接口回归脚本、卡密安全测试
 项目地址：**https://github.com/Crysq/douyinspark-alive**
 
 欢迎大家一起维护：发现问题、改进发送与防封策略、适配抖音接口变化，都欢迎提
-[Issue](https://github.com/Crysq/douyinspark-alive/issues) 或 PR。提 PR 前建议先开 Issue 说明改动方向，
-避免重复劳动。
+[Issue](https://github.com/Crysq/douyinspark-alive/issues) 或 PR。
+
+- 参与方式与开发环境：[CONTRIBUTING.md](CONTRIBUTING.md)
+- 安全问题请走私密渠道：[SECURITY.md](SECURITY.md)
+- 提 PR 前建议先开 Issue 说明改动方向，避免重复劳动
 
 ## 📄 License
 

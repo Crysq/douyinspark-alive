@@ -1,0 +1,37 @@
+name: 🐛 Bug 反馈
+description: 功能异常、报错、发送失败等问题
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        感谢反馈！请尽量提供完整信息，方便定位。
+        提交前请先搜索是否已有同类 Issue。
+  - type: textarea
+    id: what
+    attributes:
+      label: 问题描述
+      description: 发生了什么，预期是什么
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 复现步骤
+      placeholder: |
+        1. 打开 ...
+        2. 点击 ...
+        3. 出现 ...
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本 / 部署方式
+      placeholder: 例如 main@2da469f，Docker Compose
+  - type: textarea
+    id: logs
+    attributes:
+      label: 相关日志
+      description: 控制台错误、`docker compose logs app` 片段（注意去掉 Cookie / 手机号等隐私）
+      render: shell

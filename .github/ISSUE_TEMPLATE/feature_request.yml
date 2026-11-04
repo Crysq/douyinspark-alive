@@ -1,0 +1,19 @@
+name: ✨ 功能建议
+description: 新功能、体验改进、接口适配
+labels: [enhancement]
+body:
+  - type: textarea
+    id: scene
+    attributes:
+      label: 使用场景
+      description: 你想解决什么问题
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: 期望的方案
+  - type: textarea
+    id: alternative
+    attributes:
+      label: 备选方案 / 补充说明
