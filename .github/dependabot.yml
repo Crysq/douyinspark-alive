@@ -1,18 +1,48 @@
 version: 2
 updates:
+  # Go 依赖：只接受小版本/补丁，大版本手动评估
   - package-ecosystem: gomod
     directory: /server
     schedule: { interval: weekly }
     open-pull-requests-limit: 3
+    groups:
+      go-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # 前端：vite / vue 这类大版本升级会破坏构建，全部忽略 major
   - package-ecosystem: npm
     directory: /web
     schedule: { interval: weekly }
     open-pull-requests-limit: 3
+    groups:
+      web-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: npm
     directory: /sign-service
     schedule: { interval: weekly }
     open-pull-requests-limit: 2
+    groups:
+      sign-deps:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  # Actions 只跟随 patch，避免 major 跳动导致 workflow 失效
   - package-ecosystem: github-actions
     directory: /
     schedule: { interval: monthly }
     open-pull-requests-limit: 2
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
